@@ -1,0 +1,16 @@
+pub mod assets;
+pub mod categories;
+pub mod customers;
+pub mod dashboard;
+pub mod euer;
+pub mod expenses;
+pub mod invoices;
+pub mod materials;
+pub mod orders;
+pub mod overview;
+pub mod parts;
+pub mod plates;
+pub mod production;
+pub mod products;
+pub mod settings;
+pub mod stock;

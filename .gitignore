@@ -1,0 +1,4 @@
+/target
+/data
+# Echte Geschäftsdaten (Rechnungen, Belege, Altdaten) bleiben lokal
+/ressourcen
