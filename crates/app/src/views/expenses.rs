@@ -8,7 +8,7 @@ use druckplaner_core::{
 };
 use eframe::egui;
 
-use crate::widgets;
+use crate::{preview::PdfPreview, widgets};
 
 enum Act {
     None,
@@ -43,6 +43,8 @@ pub struct Expenses {
     rc_item: i64,
     rc_qty: i64,
     rc_update_price: bool,
+    /// Vorschau des verknüpften PDF-Belegs
+    preview: Option<PdfPreview>,
 }
 
 impl Expenses {
@@ -147,11 +149,34 @@ impl Expenses {
             });
         });
 
+        self.update_preview(ui.ctx(), db);
+        if self.form.id != 0 && !self.form.receipt_path.is_empty() {
+            egui::SidePanel::right("receipt_preview").default_width(420.0).resizable(true).show_inside(ui, |ui| {
+                ui.strong("Beleg");
+                match &mut self.preview {
+                    Some(preview) => preview.ui(ui),
+                    None => {
+                        ui.weak("Vorschau nur für PDF-Belege (und nur, wenn die Datei vorhanden ist) – „Beleg öffnen“ zeigt andere Dateien im Standardprogramm.");
+                    }
+                }
+            });
+        }
+
         egui::CentralPanel::default().show_inside(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.detail_ui(ui, db, &mut act));
         });
 
         self.handle(act, db, status);
+    }
+
+    /// Hält die Vorschau passend zum Beleg der gewählten Ausgabe (nur vorhandene PDF-Dateien).
+    fn update_preview(&mut self, ctx: &egui::Context, db: &Db) {
+        let wanted = db.receipt_file(&self.form).filter(|p| {
+            p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+        });
+        if self.preview.as_ref().map(PdfPreview::path) != wanted.as_deref() {
+            self.preview = wanted.map(|p| PdfPreview::new(ctx, &p));
+        }
     }
 
     fn detail_ui(&mut self, ui: &mut egui::Ui, db: &Db, act: &mut Act) {

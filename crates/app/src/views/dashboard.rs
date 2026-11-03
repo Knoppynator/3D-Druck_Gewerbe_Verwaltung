@@ -167,13 +167,13 @@ impl DashboardView {
             match (p.revenue_projected_cents, p.units_projected) {
                 (Some(revenue), Some(units)) => {
                     ui.label(format!(
-                        "Hochrechnung {}: Umsatz {} und {} Sets (bisher {} und {} Sets in {:.1} Monaten).",
+                        "Hochrechnung {}: Umsatz {} und {} Sets (bisher {} und {} Sets in {} Monaten).",
                         p.year,
                         format_eur(revenue),
                         units,
                         format_eur(p.revenue_ytd_cents),
                         p.units_ytd,
-                        p.months_elapsed
+                        widgets::dec(p.months_elapsed, 1)
                     ));
                 }
                 _ => {
@@ -237,10 +237,10 @@ impl DashboardView {
                         ui.label("Zukaufteile");
                         ui.label(eur(c.purchase_eur));
                         ui.end_row();
-                        ui.label(format!("Filament ({:.0} g)", c.filament_g));
+                        ui.label(format!("Filament ({} g)", widgets::dec(c.filament_g, 0)));
                         ui.label(eur(c.filament_eur));
                         ui.end_row();
-                        ui.label(format!("Druckzeit ({:.2} h)", c.print_hours));
+                        ui.label(format!("Druckzeit ({} h)", widgets::dec(c.print_hours, 2)));
                         ui.label(eur(c.machine_eur));
                         ui.end_row();
                         ui.strong("Selbstkosten ohne Arbeitszeit");

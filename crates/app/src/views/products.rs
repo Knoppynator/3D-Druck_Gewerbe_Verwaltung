@@ -1,5 +1,5 @@
 use druckplaner_core::{
-    catalog::{BomItem, BomLine, PriceTier, PrintPart, Product, PurchasePart, Surcharge},
+    catalog::{BomItem, BomLine, LeadTier, PriceTier, PrintPart, Product, PurchasePart, Surcharge},
     Db,
 };
 use eframe::egui;
@@ -69,6 +69,10 @@ impl Products {
                 egui::Grid::new("product_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     widgets::text_row(ui, "Name", &mut self.form.name);
                     widgets::int_row(ui, "Arbeitszeit je Stück", &mut self.form.labor_minutes, " min");
+                    ui.label("Staffeln zählen");
+                    ui.checkbox(&mut self.form.tier_per_color, "Menge je Farbe (sonst Gesamtmenge des Produkts)")
+                        .on_hover_text("Gilt für Staffelpreise und Lieferzeit-Staffel: 6× schwarz + 6× weiß ergibt dann zweimal Stufe „ab 5“, nicht einmal „ab 10“");
+                    ui.end_row();
                 });
 
                 // Stückliste
@@ -121,7 +125,11 @@ impl Products {
 
                 // Staffelpreise
                 ui.add_space(12.0);
-                ui.strong("Staffelpreise (Stückpreis ab Gesamtmenge je Bestellung)");
+                ui.strong(if self.form.tier_per_color {
+                    "Staffelpreise (Stückpreis ab Menge je Farbe in einer Bestellung)"
+                } else {
+                    "Staffelpreise (Stückpreis ab Gesamtmenge je Bestellung)"
+                });
                 let mut remove = None;
                 for (i, t) in self.form.tiers.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
@@ -140,6 +148,30 @@ impl Products {
                     let next = self.form.tiers.iter().map(|t| t.min_qty).max().map_or(1, |m| m + 1);
                     self.form.tiers.push(PriceTier { min_qty: next, unit_price_cents: 0 });
                 }
+
+                // Standard-Lieferzeit
+                ui.add_space(12.0);
+                ui.strong("Standard-Lieferzeit (Vorschlag für den Wunschtermin, ab Menge)");
+                let mut remove = None;
+                for (i, t) in self.form.lead_tiers.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label("ab");
+                        ui.add(egui::DragValue::new(&mut t.min_qty).range(1..=10_000).suffix(" Stk."));
+                        ui.add(egui::DragValue::new(&mut t.days).range(0..=365).suffix(" Tage"));
+                        if ui.small_button("×").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    self.form.lead_tiers.remove(i);
+                }
+                if ui.button("+ Lieferzeit").clicked() {
+                    let next = self.form.lead_tiers.iter().map(|t| t.min_qty).max().map_or(1, |m| m + 1);
+                    let days = self.form.lead_tiers.last().map_or(14, |t| t.days);
+                    self.form.lead_tiers.push(LeadTier { min_qty: next, days });
+                }
+                ui.weak("Ohne Eintrag gilt die Standard-Lieferzeit aus den Einstellungen.");
 
                 // Aufpreise je Werkstoff
                 ui.add_space(12.0);

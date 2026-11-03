@@ -1,7 +1,5 @@
 //! Bestellungen mit Positionen, Preisvorbelegung aus der Preisliste und abgeleitetem Status.
 
-use std::collections::HashMap;
-
 use rusqlite::params;
 
 use crate::{
@@ -142,23 +140,37 @@ impl OrderSummary {
     }
 }
 
-/// Setzt Stückpreise aus Preisliste (Produkte, Staffel nach Gesamtmenge je Produkt in der Bestellung)
-/// und Verkaufspreis (Zukaufteile). Freie Positionen bleiben unverändert.
+/// Menge, nach der die Staffeln (Preis, Lieferzeit) für eine Produktposition greifen: Gesamtmenge des Produkts in der
+/// Bestellung oder – wenn das Produkt `tier_per_color` hat – nur die Menge in derselben Farbe.
+fn tier_qty(order: &Order, product: &Product, line: &OrderLine) -> i64 {
+    order
+        .lines
+        .iter()
+        .filter(|o| o.product_id == line.product_id && (!product.tier_per_color || o.material_id == line.material_id))
+        .map(|o| o.qty)
+        .sum()
+}
+
+/// Setzt Stückpreise aus Preisliste (Produkte, Staffel nach Menge je Produkt bzw. je Produkt und Farbe in der
+/// Bestellung) und Verkaufspreis (Zukaufteile). Freie Positionen bleiben unverändert.
 pub fn apply_prices(order: &mut Order, products: &[Product], materials: &[Material], parts: &[PurchasePart]) {
-    let mut totals: HashMap<i64, i64> = HashMap::new();
-    for l in &order.lines {
-        if let Some(pid) = l.product_id {
-            *totals.entry(pid).or_default() += l.qty;
-        }
-    }
-    for l in &mut order.lines {
+    let quantities: Vec<i64> = order
+        .lines
+        .iter()
+        .map(|l| {
+            l.product_id
+                .and_then(|pid| products.iter().find(|p| p.id == pid))
+                .map_or(0, |p| tier_qty(order, p, l))
+        })
+        .collect();
+    for (l, qty) in order.lines.iter_mut().zip(quantities) {
         if let Some(pid) = l.product_id {
             let Some(product) = products.iter().find(|p| p.id == pid) else { continue };
             let kind = l
                 .material_id
                 .and_then(|mid| materials.iter().find(|m| m.id == mid))
                 .map_or("", |m| m.kind.as_str());
-            if let Some(cents) = pricing::unit_price_cents(product, kind, totals[&pid]) {
+            if let Some(cents) = pricing::unit_price_cents(product, kind, qty) {
                 l.unit_price_cents = cents;
             }
         } else if let Some(ppid) = l.purchase_part_id {
@@ -167,6 +179,25 @@ pub fn apply_prices(order: &mut Order, products: &[Product], materials: &[Materi
             }
         }
     }
+}
+
+/// Vorschlag für den Wunschtermin: Eingangsdatum plus die längste Standard-Lieferzeit der Positionen. Produkte
+/// verwenden ihre Lieferzeit-Staffel (gleiche Mengenregel wie beim Preis), alles andere `default_days`.
+/// `None`, wenn das Eingangsdatum ungültig ist oder keine Lieferzeit bekannt ist.
+pub fn suggest_due_date(order: &Order, products: &[Product], default_days: i64) -> Option<String> {
+    let fallback = (default_days > 0).then_some(default_days);
+    let days = order
+        .lines
+        .iter()
+        .filter_map(|l| {
+            let product = l.product_id.and_then(|pid| products.iter().find(|p| p.id == pid));
+            match product {
+                Some(p) => pricing::lead_days(p, tier_qty(order, p, l)).or(fallback),
+                None => fallback,
+            }
+        })
+        .max()?;
+    date::shift_days(&order.received_at, days)
 }
 
 impl Db {
@@ -425,6 +456,48 @@ mod tests {
         assert_eq!(order.lines[2].unit_price_cents, 125);
         assert_eq!(order.lines[3].unit_price_cents, 555);
         assert_eq!(order.total_cents(), 8 * 1300 + 4 * 1500 + 3 * 125 + 555);
+    }
+
+    #[test]
+    fn tier_per_color_counts_each_color_on_its_own() {
+        let mut order = Order {
+            lines: vec![
+                OrderLine { product_id: Some(1), material_id: Some(1), qty: 8, ..Default::default() },
+                OrderLine { product_id: Some(1), material_id: Some(2), qty: 4, ..Default::default() },
+                OrderLine { product_id: Some(1), material_id: Some(1), qty: 3, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let mut p = product();
+        p.tier_per_color = true;
+        let materials = [material(1, "PETG"), material(2, "PETG-CF")];
+        apply_prices(&mut order, &[p], &materials, &[]);
+        // Farbe 1: 8 + 3 = 11 Stück → Stufe ab 10; Farbe 2: 4 Stück → Stufe ab 1 plus Aufpreis
+        assert_eq!(order.lines[0].unit_price_cents, 1300);
+        assert_eq!(order.lines[2].unit_price_cents, 1300);
+        assert_eq!(order.lines[1].unit_price_cents, 2000 + 200);
+    }
+
+    #[test]
+    fn due_date_suggestion_uses_lead_tiers_with_default_fallback() {
+        use crate::catalog::LeadTier;
+        let mut p = product();
+        p.lead_tiers = vec![LeadTier { min_qty: 1, days: 7 }, LeadTier { min_qty: 10, days: 14 }];
+        let mut order = Order {
+            received_at: "2026-10-20".into(),
+            lines: vec![OrderLine { product_id: Some(1), material_id: Some(1), qty: 4, ..Default::default() }],
+            ..Default::default()
+        };
+        assert_eq!(suggest_due_date(&order, &[p.clone()], 21).as_deref(), Some("2026-10-27"));
+        order.lines[0].qty = 12;
+        assert_eq!(suggest_due_date(&order, &[p.clone()], 21).as_deref(), Some("2026-11-03"));
+        // zusätzliche freie Position: gilt die Standard-Lieferzeit, die längste gewinnt
+        order.lines.push(OrderLine { description: "Frei".into(), ..Default::default() });
+        assert_eq!(suggest_due_date(&order, &[p.clone()], 21).as_deref(), Some("2026-11-10"));
+        // ohne Staffel und ohne Standard: kein Vorschlag
+        assert_eq!(suggest_due_date(&order, &[product()], 0), None);
+        order.received_at.clear();
+        assert_eq!(suggest_due_date(&order, &[p], 21), None);
     }
 
     #[test]

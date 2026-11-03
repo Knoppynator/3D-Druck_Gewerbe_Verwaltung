@@ -320,6 +320,13 @@ pub struct PriceTier {
     pub unit_price_cents: i64,
 }
 
+/// Standard-Lieferzeit in Tagen: gilt ab `min_qty` Stück.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeadTier {
+    pub min_qty: i64,
+    pub days: i64,
+}
+
 /// Aufpreis je Stück für einen Werkstoff.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Surcharge {
@@ -332,8 +339,11 @@ pub struct Product {
     pub id: i64,
     pub name: String,
     pub labor_minutes: i64,
+    /// Staffeln (Preis, Lieferzeit) zählen die Menge je Farbe statt der Gesamtmenge des Produkts
+    pub tier_per_color: bool,
     pub bom: Vec<BomLine>,
     pub tiers: Vec<PriceTier>,
+    pub lead_tiers: Vec<LeadTier>,
     pub surcharges: Vec<Surcharge>,
 }
 
@@ -341,14 +351,21 @@ impl Db {
     pub fn list_products(&self) -> Result<Vec<Product>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, labor_minutes FROM product ORDER BY name COLLATE NOCASE")?;
+            .prepare("SELECT id, name, labor_minutes, tier_per_color FROM product ORDER BY name COLLATE NOCASE")?;
         let rows = stmt.query_map([], |r| {
-            Ok(Product { id: r.get(0)?, name: r.get(1)?, labor_minutes: r.get(2)?, ..Default::default() })
+            Ok(Product {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                labor_minutes: r.get(2)?,
+                tier_per_color: r.get(3)?,
+                ..Default::default()
+            })
         })?;
         let mut products = collect(rows)?;
         for p in &mut products {
             p.bom = self.load_bom(p.id)?;
             p.tiers = self.load_tiers(p.id)?;
+            p.lead_tiers = self.load_lead_tiers(p.id)?;
             p.surcharges = self.load_surcharges(p.id)?;
         }
         Ok(products)
@@ -382,6 +399,14 @@ impl Db {
         collect(rows)
     }
 
+    fn load_lead_tiers(&self, product_id: i64) -> Result<Vec<LeadTier>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT min_qty, days FROM lead_tier WHERE product_id = ?1 ORDER BY min_qty")?;
+        let rows = stmt.query_map([product_id], |r| Ok(LeadTier { min_qty: r.get(0)?, days: r.get(1)? }))?;
+        collect(rows)
+    }
+
     fn load_surcharges(&self, product_id: i64) -> Result<Vec<Surcharge>> {
         let mut stmt = self.conn.prepare(
             "SELECT material_kind, cents FROM material_surcharge
@@ -400,15 +425,15 @@ impl Db {
         let dup = "Ein Produkt mit diesem Namen existiert bereits";
         let id = if p.id == 0 {
             tx.execute(
-                "INSERT INTO product (name, labor_minutes) VALUES (?1, ?2)",
-                params![p.name, p.labor_minutes],
+                "INSERT INTO product (name, labor_minutes, tier_per_color) VALUES (?1, ?2, ?3)",
+                params![p.name, p.labor_minutes, p.tier_per_color],
             )
             .map_err(|e| map_constraint(e, dup))?;
             tx.last_insert_rowid()
         } else {
             tx.execute(
-                "UPDATE product SET name = ?1, labor_minutes = ?2 WHERE id = ?3",
-                params![p.name, p.labor_minutes, p.id],
+                "UPDATE product SET name = ?1, labor_minutes = ?2, tier_per_color = ?3 WHERE id = ?4",
+                params![p.name, p.labor_minutes, p.tier_per_color, p.id],
             )
             .map_err(|e| map_constraint(e, dup))?;
             p.id
@@ -435,6 +460,15 @@ impl Db {
                 params![id, t.min_qty, t.unit_price_cents],
             )
             .map_err(|e| map_constraint(e, "Staffelpreis ungültig oder Menge doppelt vergeben"))?;
+        }
+
+        tx.execute("DELETE FROM lead_tier WHERE product_id = ?1", [id])?;
+        for t in &p.lead_tiers {
+            tx.execute(
+                "INSERT INTO lead_tier (product_id, min_qty, days) VALUES (?1, ?2, ?3)",
+                params![id, t.min_qty, t.days],
+            )
+            .map_err(|e| map_constraint(e, "Lieferzeit-Staffel ungültig oder Menge doppelt vergeben"))?;
         }
 
         tx.execute("DELETE FROM material_surcharge WHERE product_id = ?1", [id])?;
@@ -514,6 +548,8 @@ mod tests {
                 PriceTier { min_qty: 1, unit_price_cents: 2000 },
             ],
             surcharges: vec![Surcharge { material_kind: "PETG-CF".into(), cents: 200 }],
+            lead_tiers: vec![LeadTier { min_qty: 10, days: 14 }, LeadTier { min_qty: 1, days: 7 }],
+            tier_per_color: true,
             ..Default::default()
         };
         db.save_product(&mut p).unwrap();
@@ -522,6 +558,8 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].bom, p.bom);
         assert_eq!(loaded[0].surcharges, p.surcharges);
+        assert!(loaded[0].tier_per_color);
+        assert_eq!(loaded[0].lead_tiers.iter().map(|t| (t.min_qty, t.days)).collect::<Vec<_>>(), vec![(1, 7), (10, 14)]);
         // Staffeln kommen nach Menge sortiert zurück
         assert_eq!(loaded[0].tiers[0].min_qty, 1);
         assert_eq!(loaded[0].tiers[1].min_qty, 10);

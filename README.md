@@ -36,6 +36,11 @@ lässt sich ein anderer Ordner wählen (z. B. zum Testen).
    (PDF landet in `<Datenordner>\rechnungen\JJJJ\`) → **Zahlung** unter „Rechnungen“ erfassen.
 4. Die Seite **Offen** zeigt, was als Nächstes zu tun ist.
 
+**Wunschtermin:** Beim Produkt lässt sich eine Standard-Lieferzeit nach Stückzahl hinterlegen (wie die Staffelpreise);
+die Bestellung schlägt daraus Eingang + Lieferzeit vor (Knopf „Vorschlag“, bei neuen Bestellungen automatisch, bis du
+den Termin selbst änderst). Ohne Staffel gilt die Standard-Lieferzeit aus den Einstellungen. Datumsfelder haben einen
+Mini-Kalender (📆); Dezimalzahlen werden mit Komma eingegeben.
+
 ## Finanzen
 
 - **Ausgaben:** erfassen, Kategorie wählen, Beleg als Datei anhängen („Datei anhängen …“ kopiert sie nach
@@ -43,6 +48,9 @@ lässt sich ein anderer Ordner wählen (z. B. zum Testen).
 - **EÜR:** Jahresauswertung (Einnahmen nach Zahlungsdatum, Ausgaben je Kategorie, Gewinn), Export als PDF und CSV nach
   `<Datenordner>\exporte\`. Die EÜR-Zeilen pflegst du unter *Stammdaten › Kategorien* und in den Einstellungen – bitte
   anhand des aktuellen ELSTER-Formulars prüfen.
+- **Staffel je Farbe:** Beim Produkt lässt sich wählen, ob Staffelpreise (und Lieferzeit-Staffel) die Gesamtmenge
+  oder die Menge je Farbe zählen.
+- **Beleg-Vorschau:** Ausgaben mit angehängtem PDF zeigen den Beleg rechts im Fenster.
 - **Altdaten:** *Einstellungen › Altdaten importieren*: `ressourcen\Ausgaben\Ausgaben_Tracking.ods` und den Ordner
   `ressourcen\Rechnungen` wählen, vorher den Kunden der Altrechnungen anlegen, „Prüfen“, dann „Importieren“.
   Altrechnungen bekommen eine Sammelposition (Positionen stehen im PDF) und gelten als am Rechnungsdatum bezahlt.
@@ -67,7 +75,8 @@ lässt sich ein anderer Ordner wählen (z. B. zum Testen).
 3. **Produktion:** zeigt den Bedarf (offene Bestellungen + Mindestbestand − Lager − Geplantes), schlägt Platten vor,
    führt die Warteschlange und berechnet Start/Ende je Job. Neue Drucke beginnen nur im Zeitfenster für den
    Plattenwechsel (Einstellungen, Standard 07:00–23:00).
-4. **Fertig** bucht Teile ins Lager und das Filament ab, **Fehldruck** nur das Filament; „Zurücknehmen“ macht es rückgängig.
+4. **Fertig** bucht Teile ins Lager und das Filament ab. **Fehldruck** fragt nach den brauchbaren Teilen je Druckteil
+   (kommen ins Lager) und dem Verbrauch, vorbelegt mit der Standardmenge der Platte; „Zurücknehmen“ macht beides rückgängig.
 
 ## Datensicherung
 

@@ -1,17 +1,23 @@
-use crate::catalog::{PriceTier, Product};
+use crate::catalog::Product;
 
-/// Stückpreis in Cent für `qty` Stück (Gesamtmenge des Produkts in der Bestellung) im Werkstoff
-/// `material_kind`: Staffelpreis der höchsten passenden Stufe plus Werkstoff-Aufpreis.
-/// Liegt `qty` unter der kleinsten Stufe, gilt die kleinste Stufe. `None`, wenn keine Staffel gepflegt ist.
+/// Wert der höchsten Stufe mit `min_qty <= qty`; liegt `qty` unter der kleinsten Stufe, gilt die kleinste.
+fn pick_tier<T>(tiers: &[T], qty: i64, min_qty: impl Fn(&T) -> i64) -> Option<&T> {
+    let mut sorted: Vec<&T> = tiers.iter().collect();
+    sorted.sort_by_key(|t| min_qty(t));
+    sorted.iter().rev().find(|t| min_qty(t) <= qty).or(sorted.first()).copied()
+}
+
+/// Standard-Lieferzeit in Tagen für `qty` Stück; `None`, wenn für das Produkt keine Staffel gepflegt ist.
+pub fn lead_days(product: &Product, qty: i64) -> Option<i64> {
+    pick_tier(&product.lead_tiers, qty, |t| t.min_qty).map(|t| t.days)
+}
+
+/// Stückpreis in Cent für `qty` Stück (Menge des Produkts in der Bestellung, je nach Einstellung des Produkts
+/// gesamt oder je Farbe) im Werkstoff `material_kind`: Staffelpreis der höchsten passenden Stufe plus
+/// Werkstoff-Aufpreis. Liegt `qty` unter der kleinsten Stufe, gilt die kleinste Stufe. `None`, wenn keine
+/// Staffel gepflegt ist.
 pub fn unit_price_cents(product: &Product, material_kind: &str, qty: i64) -> Option<i64> {
-    let mut tiers: Vec<&PriceTier> = product.tiers.iter().collect();
-    tiers.sort_by_key(|t| t.min_qty);
-    let base = tiers
-        .iter()
-        .rev()
-        .find(|t| t.min_qty <= qty)
-        .or(tiers.first())?
-        .unit_price_cents;
+    let base = pick_tier(&product.tiers, qty, |t| t.min_qty)?.unit_price_cents;
     let surcharge: i64 = product
         .surcharges
         .iter()
@@ -24,7 +30,7 @@ pub fn unit_price_cents(product: &Product, material_kind: &str, qty: i64) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::Surcharge;
+    use crate::catalog::{PriceTier, Surcharge};
 
     fn product() -> Product {
         Product {
@@ -52,6 +58,18 @@ mod tests {
         let p = product();
         assert_eq!(unit_price_cents(&p, "PETG-CF", 15), Some(1500));
         assert_eq!(unit_price_cents(&p, "PETG-CF", 1), Some(2200));
+    }
+
+    #[test]
+    fn lead_days_follow_the_same_tier_rule() {
+        use crate::catalog::LeadTier;
+        let mut p = product();
+        assert_eq!(lead_days(&p, 5), None);
+        p.lead_tiers = vec![LeadTier { min_qty: 10, days: 14 }, LeadTier { min_qty: 1, days: 7 }];
+        assert_eq!(lead_days(&p, 1), Some(7));
+        assert_eq!(lead_days(&p, 9), Some(7));
+        assert_eq!(lead_days(&p, 10), Some(14));
+        assert_eq!(lead_days(&p, 0), Some(7));
     }
 
     #[test]

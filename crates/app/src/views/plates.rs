@@ -65,7 +65,7 @@ impl Plates {
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for t in &self.items {
-                    let text = format!("{}\n{} · {:.0} g", t.name, t.duration_label(), t.filament_g);
+                    let text = format!("{}\n{} · {} g", t.name, t.duration_label(), widgets::dec(t.filament_g, 0));
                     if ui.selectable_label(self.form.id == t.id, text).clicked() {
                         act = Action::Select(t.id);
                     }
@@ -216,7 +216,7 @@ impl Plates {
             });
             ui.end_row();
             ui.label("Filament");
-            ui.add(egui::DragValue::new(&mut self.form.filament_g).range(0.0..=100_000.0).speed(0.5).fixed_decimals(1).suffix(" g"));
+            widgets::dec_drag(ui, &mut self.form.filament_g, 0.0..=100_000.0, 0.5, 1, " g");
             ui.end_row();
             widgets::text_row(ui, "Notiz", &mut self.form.note);
         });
@@ -268,7 +268,7 @@ impl Plates {
             for (i, p) in import.plates.iter().enumerate() {
                 let objects = p.object_counts().iter().map(|c| format!("{}×{}", c.name, c.count)).collect::<Vec<_>>().join(", ");
                 let facts = if p.sliced {
-                    format!("{} · {:.1} g", duration_text(p.print_seconds), p.weight_g)
+                    format!("{} · {} g", duration_text(p.print_seconds), widgets::dec(p.weight_g, 1))
                 } else {
                     "nicht gesliced".to_string()
                 };

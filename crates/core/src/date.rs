@@ -110,6 +110,22 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (yoe + era * 400 + i64::from(month <= 2), month, day)
 }
 
+/// Verschiebt ein ISO-Datum um `days` Tage (ohne Datenbank); `None` bei ungültigem Datum.
+pub fn shift_days(iso: &str, days: i64) -> Option<String> {
+    if !is_valid_iso(iso) {
+        return None;
+    }
+    let (y, m, d) = (iso[0..4].parse().ok()?, iso[5..7].parse().ok()?, iso[8..10].parse().ok()?);
+    let (y, m, d) = civil_from_days(days_from_civil(y, m, d) + days);
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
+/// Wochentag eines ISO-Datums, 0 = Montag … 6 = Sonntag.
+pub fn weekday(year: i32, month: u32, day: u32) -> u32 {
+    // 1970-01-01 war ein Donnerstag
+    (days_from_civil(year.into(), month.into(), day.into()) + 3).rem_euclid(7) as u32
+}
+
 /// `JJJJ-MM-TT HH:MM` → Minuten seit 1970-01-01 00:00.
 pub fn datetime_to_minutes(s: &str) -> Option<i64> {
     let (day, time) = s.split_once(' ')?;
@@ -178,6 +194,17 @@ mod tests {
         assert!(!is_valid_iso("2026-02-30"));
         assert!(!is_valid_iso(""));
         assert_eq!(year_of("2026-09-30"), Some(2026));
+    }
+
+    #[test]
+    fn shifts_days_and_knows_weekdays() {
+        assert_eq!(shift_days("2026-10-25", 10).as_deref(), Some("2026-11-04"));
+        assert_eq!(shift_days("2024-02-28", 2).as_deref(), Some("2024-03-01"));
+        assert_eq!(shift_days("2026-01-01", -1).as_deref(), Some("2025-12-31"));
+        assert_eq!(shift_days("", 1), None);
+        assert_eq!(weekday(2026, 11, 3), 1, "Dienstag");
+        assert_eq!(weekday(2026, 11, 1), 6, "Sonntag");
+        assert_eq!(weekday(1970, 1, 1), 3, "Donnerstag");
     }
 
     #[test]

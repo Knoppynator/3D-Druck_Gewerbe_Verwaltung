@@ -59,6 +59,11 @@ pub const FIELDS: &[SettingField] = &[
         default: "",
     },
     SettingField {
+        key: "default_lead_days",
+        label: "Standard-Lieferzeit (Tage, wenn das Produkt keine Staffel hat)",
+        default: "14",
+    },
+    SettingField {
         key: "invoice_last_number",
         label: "Letzte bisherige Rechnungsnr. (z. B. 2026-1011)",
         default: "",

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod preview;
 mod views;
 mod widgets;
 
@@ -182,6 +183,10 @@ impl Main {
     }
 
     fn show(&mut self, ctx: &egui::Context) {
+        // heutiges Datum für den Kalender in den Datumsfeldern
+        if let Ok(today) = self.db.today() {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new(widgets::TODAY_KEY), today));
+        }
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.label(&self.status);
         });

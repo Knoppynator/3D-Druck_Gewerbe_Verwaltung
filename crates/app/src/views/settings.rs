@@ -118,7 +118,7 @@ impl SettingsView {
                 ui.weak("Noch keine Sicherung im Backup-Ordner.");
             }
             for b in self.backups.iter().take(5) {
-                ui.label(format!("{} · {:.1} MB", b.label(), b.size_bytes as f64 / 1_048_576.0));
+                ui.label(format!("{} · {} MB", b.label(), widgets::dec(b.size_bytes as f64 / 1_048_576.0, 1)));
             }
 
             ui.add_space(16.0);

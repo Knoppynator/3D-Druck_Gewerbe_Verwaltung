@@ -1,5 +1,5 @@
 use druckplaner_core::{
-    catalog::Material,
+    catalog::{Material, PrintPart},
     date::{format_datetime_de, format_de},
     production::{JobStatus, NeedRow, PlateTemplate, PrintJob, Schedule, Suggestions},
     Db,
@@ -18,7 +18,19 @@ enum Act {
     Start(i64),
     Finish(i64),
     Fail(i64),
+    ConfirmFail,
+    CancelFail,
     Reopen(i64),
+}
+
+/// Eingabe für einen Fehldruck: Verbrauch und brauchbare Teile je Druckteil der Platte.
+struct FailForm {
+    job_id: i64,
+    title: String,
+    used_g: i64,
+    default_g: i64,
+    /// (Druckteil-ID, Name, Stück je Platte, davon brauchbar)
+    parts: Vec<(i64, String, i64, i64)>,
 }
 
 #[derive(Default)]
@@ -31,8 +43,8 @@ pub struct Production {
     materials: Vec<Material>,
     new_template: i64,
     new_material: i64,
-    /// Verbrauch in Gramm, der bei „Fehldruck“ abgebucht wird
-    fail_g: i64,
+    print_parts: Vec<PrintPart>,
+    fail: Option<FailForm>,
 }
 
 impl Production {
@@ -54,6 +66,9 @@ impl Production {
         }
         if let Some(v) = widgets::report(status, db.list_materials(), "") {
             self.materials = v;
+        }
+        if let Some(v) = widgets::report(status, db.list_print_parts(), "") {
+            self.print_parts = v;
         }
     }
 
@@ -117,14 +132,14 @@ impl Production {
                 ui.horizontal(|ui| {
                     let produces = s.produces.iter().map(|(n, q)| format!("{n} +{q}")).collect::<Vec<_>>().join(", ");
                     ui.label(format!(
-                        "{}× {} in {} → {} ({} h {:02} min, {:.0} g)",
+                        "{}× {} in {} → {} ({} h {:02} min, {} g)",
                         s.count,
                         s.template_name,
                         s.material_label,
                         produces,
                         s.minutes_total / 60,
                         s.minutes_total % 60,
-                        s.filament_g_total
+                        widgets::dec(s.filament_g_total, 0)
                     ));
                     if ui.button("Einplanen").clicked() {
                         act = Act::ApplySuggestion(i);
@@ -177,7 +192,7 @@ impl Production {
                                 if ui.small_button("Fertig").clicked() {
                                     act = Act::Finish(id);
                                 }
-                                if ui.small_button("Fehldruck").on_hover_text("Bucht den Verbrauch (rechts unter der Tabelle) ab, ohne Teile").clicked() {
+                                if ui.small_button("Fehldruck").on_hover_text("Verbrauch und brauchbare Teile angeben").clicked() {
                                     act = Act::Fail(id);
                                 }
                             }
@@ -186,10 +201,6 @@ impl Production {
                     });
                     ui.end_row();
                 }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Verbrauch bei Fehldruck");
-                ui.add(egui::DragValue::new(&mut self.fail_g).range(0..=10_000).suffix(" g"));
             });
 
             // ---- Job manuell anlegen
@@ -229,7 +240,8 @@ impl Production {
                         ui.label(template);
                         ui.label(material);
                         ui.label(format_datetime_de(&j.finished_at));
-                        ui.label(format!("{} · {} g", j.status.label(), j.used_g));
+                        let usable = if j.status == JobStatus::Failed && j.parts_booked > 0 { format!(" · {} Teile brauchbar", j.parts_booked) } else { String::new() };
+                        ui.label(format!("{} · {} g{usable}", j.status.label(), j.used_g));
                         if ui.small_button("Zurücknehmen").on_hover_text("Macht die Lagerbuchungen rückgängig").clicked() {
                             act = Act::Reopen(j.id);
                         }
@@ -239,7 +251,45 @@ impl Production {
             });
         });
 
+        self.fail_window(ui.ctx(), &mut act);
         self.handle(act, db, status);
+    }
+
+    fn fail_window(&mut self, ctx: &egui::Context, act: &mut Act) {
+        let Some(f) = self.fail.as_mut() else { return };
+        egui::Window::new("Fehldruck buchen")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(f.title.as_str());
+                ui.add_space(6.0);
+                ui.strong("Brauchbare Teile (kommen ins Lager)");
+                for (_, name, planned, usable) in &mut f.parts {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(usable).range(0..=*planned).suffix(format!(" von {planned}")));
+                        ui.label(name.as_str());
+                    });
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Verbrauchtes Filament");
+                    ui.add(egui::DragValue::new(&mut f.used_g).range(0..=10_000).suffix(" g"));
+                    if f.used_g != f.default_g && ui.small_button("Standard").clicked() {
+                        f.used_g = f.default_g;
+                    }
+                });
+                ui.weak(format!("Vorgabe: Standardmenge der Platte ({} g) – bei Bedarf anpassen.", f.default_g));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Fehldruck buchen").clicked() {
+                        *act = Act::ConfirmFail;
+                    }
+                    if ui.button("Abbrechen").clicked() {
+                        *act = Act::CancelFail;
+                    }
+                });
+            });
     }
 
     fn handle(&mut self, act: Act, db: &Db, status: &mut String) {
@@ -262,11 +312,51 @@ impl Production {
             Act::Delete(id) => widgets::report(status, db.delete_job(id), "Job entfernt").is_some(),
             Act::Start(id) => widgets::report(status, db.start_job(id), "Druck gestartet").is_some(),
             Act::Finish(id) => widgets::report(status, db.finish_job(id), "Job abgeschlossen – Teile und Filament gebucht").is_some(),
-            Act::Fail(id) => widgets::report(status, db.fail_job(id, self.fail_g), "Fehldruck gebucht (Filament abgezogen)").is_some(),
+            Act::Fail(id) => {
+                self.open_fail(db, status, id);
+                false
+            }
+            Act::CancelFail => {
+                self.fail = None;
+                false
+            }
+            Act::ConfirmFail => match self.fail.take() {
+                Some(f) => {
+                    let usable: Vec<(i64, i64)> = f.parts.iter().map(|p| (p.0, p.3)).collect();
+                    let ok = widgets::report(status, db.fail_job(f.job_id, f.used_g, &usable), "Fehldruck gebucht").is_some();
+                    if !ok {
+                        self.fail = Some(f);
+                    }
+                    ok
+                }
+                None => false,
+            },
             Act::Reopen(id) => widgets::report(status, db.reopen_job(id), "Job zurückgenommen, Lagerbuchungen entfernt").is_some(),
         };
         if done {
             self.reload(db, status);
         }
+    }
+
+    /// Öffnet die Fehldruck-Eingabe mit den Standardwerten der Platte (Verbrauch laut Vorlage, nichts brauchbar).
+    fn open_fail(&mut self, db: &Db, status: &mut String, id: i64) {
+        let Some(job) = self.schedule.jobs.iter().find(|j| j.job.id == id) else { return };
+        let Some(template) = self.templates.iter().find(|t| t.id == job.job.template_id) else { return };
+        let Some(default_g) = widgets::report(status, db.default_job_usage_g(id), "") else { return };
+        let parts = template
+            .parts
+            .iter()
+            .map(|p| {
+                let name = self.print_parts.iter().find(|n| n.id == p.print_part_id).map_or("?", |n| n.name.as_str());
+                (p.print_part_id, name.to_string(), p.qty, 0)
+            })
+            .collect();
+        self.fail = Some(FailForm {
+            job_id: id,
+            title: format!("{} · {}", job.template_name, job.material_label),
+            used_g: default_g,
+            default_g,
+            parts,
+        });
     }
 }

@@ -4,7 +4,7 @@ use druckplaner_core::{
     catalog::{Customer, Material, Product, PurchasePart},
     date::format_de,
     money::format_eur,
-    orders::{apply_prices, Order, OrderLine, OrderStatus, OrderSummary, STAGES},
+    orders::{apply_prices, suggest_due_date, Order, OrderLine, OrderStatus, OrderSummary, STAGES},
     shipments::Shipment,
     Db,
 };
@@ -44,6 +44,10 @@ pub struct Orders {
     materials: Vec<Material>,
     parts: Vec<PurchasePart>,
     today: String,
+    /// Standard-Lieferzeit in Tagen (Einstellungen) für den Terminvorschlag
+    default_lead_days: i64,
+    /// Wunschtermin folgt dem Vorschlag, solange er nicht von Hand geändert wurde
+    due_auto: bool,
 }
 
 impl Orders {
@@ -67,6 +71,9 @@ impl Orders {
         if let Some(v) = widgets::report(status, db.today(), "") {
             self.today = v;
         }
+        if let Some(v) = widgets::report(status, db.setting_or_default("default_lead_days"), "") {
+            self.default_lead_days = v.trim().parse().unwrap_or(0);
+        }
         self.reload_ships(db, status);
     }
 
@@ -88,6 +95,7 @@ impl Orders {
     pub fn open(&mut self, db: &Db, status: &mut String, id: i64) {
         if let Some(order) = widgets::report(status, db.load_order(id), "") {
             self.form = order;
+            self.due_auto = self.form.due_date.is_empty();
             self.reload_ships(db, status);
         }
     }
@@ -98,6 +106,7 @@ impl Orders {
             received_at: self.today.clone(),
             ..Default::default()
         };
+        self.due_auto = true;
         self.ships.clear();
     }
 
@@ -138,6 +147,8 @@ impl Orders {
     }
 
     fn detail_ui(&mut self, ui: &mut egui::Ui, act: &mut Act) {
+        let (received_before, due_before) = (self.form.received_at.clone(), self.form.due_date.clone());
+        let mut suggest_now = false;
         ui.heading(if self.form.id == 0 { "Neue Bestellung" } else { "Bestellung bearbeiten" });
         ui.add_space(8.0);
 
@@ -158,7 +169,18 @@ impl Orders {
                 });
             ui.end_row();
             widgets::date_row(ui, "Eingang", &mut self.form.received_at);
-            widgets::date_row(ui, "Wunschtermin", &mut self.form.due_date);
+            ui.label("Wunschtermin");
+            ui.horizontal(|ui| {
+                widgets::date_edit(ui, "Wunschtermin", &mut self.form.due_date);
+                if ui
+                    .button("Vorschlag")
+                    .on_hover_text("Eingang plus Standard-Lieferzeit je nach Stückzahl (Produkt-Staffel bzw. Einstellungen)")
+                    .clicked()
+                {
+                    suggest_now = true;
+                }
+            });
+            ui.end_row();
             widgets::text_row(ui, "Kanal (z. B. WhatsApp)", &mut self.form.channel);
             widgets::text_row(ui, "Notiz", &mut self.form.note);
             if self.ships.is_empty() {
@@ -173,6 +195,12 @@ impl Orders {
                 ui.end_row();
             }
         });
+        if self.form.due_date != due_before {
+            self.due_auto = false;
+        }
+        if suggest_now {
+            self.due_auto = true;
+        }
 
         // Positionen
         ui.add_space(12.0);
@@ -271,6 +299,11 @@ impl Orders {
         });
         if reprice {
             apply_prices(&mut self.form, &self.products, &self.materials, &self.parts);
+        }
+        if (reprice || suggest_now || self.form.received_at != received_before) && self.due_auto {
+            if let Some(due) = suggest_due_date(&self.form, &self.products, self.default_lead_days) {
+                self.form.due_date = due;
+            }
         }
         ui.label(format!("Summe: {}", format_eur(self.form.total_cents())));
 

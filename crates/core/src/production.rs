@@ -92,6 +92,8 @@ pub struct PrintJob {
     pub started_at: String,
     pub finished_at: String,
     pub used_g: i64,
+    /// Ins Lager gebuchte Teile (bei Fehldruck: die brauchbaren)
+    pub parts_booked: i64,
     pub note: String,
 }
 
@@ -203,12 +205,14 @@ fn job_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PrintJob> {
         started_at: r.get(5)?,
         finished_at: r.get(6)?,
         used_g: r.get(7)?,
+        parts_booked: r.get(9)?,
         note: r.get(8)?,
     })
 }
 
-const JOB_SELECT: &str =
-    "SELECT id, plate_template_id, material_id, status, position, started_at, finished_at, used_g, note FROM print_job";
+const JOB_SELECT: &str = "SELECT id, plate_template_id, material_id, status, position, started_at, finished_at, used_g, note,
+       (SELECT COALESCE(SUM(qty), 0) FROM stock_move WHERE ref_type = 'print_job' AND ref_id = print_job.id AND qty > 0)
+     FROM print_job";
 
 impl Db {
     // ---- Plattenvorlagen
@@ -449,8 +453,16 @@ impl Db {
         Ok(())
     }
 
-    /// Markiert den Job als Fehldruck: verbrauchtes Filament wird abgebucht, es entstehen keine Teile.
-    pub fn fail_job(&self, id: i64, used_g: i64) -> Result<()> {
+    /// Standardverbrauch der Platte in Gramm (gerundet) – Vorgabe, wenn ein Druck fehlschlägt.
+    pub fn default_job_usage_g(&self, id: i64) -> Result<i64> {
+        let job = self.load_job(id)?;
+        Ok(self.template_by_id(job.template_id)?.filament_g.round() as i64)
+    }
+
+    /// Markiert den Job als Fehldruck: das verbrauchte Filament `used_g` wird abgebucht (Vorgabe: Standardmenge der
+    /// Platte, siehe [`Db::default_job_usage_g`]); `usable` nennt je Druckteil der Platte, wie viele Stück brauchbar
+    /// sind – sie kommen ins Lager, der Rest ist Ausschuss.
+    pub fn fail_job(&self, id: i64, used_g: i64, usable: &[(i64, i64)]) -> Result<()> {
         let job = self.load_job(id)?;
         if !matches!(job.status, JobStatus::Planned | JobStatus::Printing) {
             return Err(Error::Invalid("Der Job ist bereits abgeschlossen".into()));
@@ -459,6 +471,17 @@ impl Db {
             return Err(Error::Invalid("Verbrauch darf nicht negativ sein".into()));
         }
         let template = self.template_by_id(job.template_id)?;
+        let mut good = PlateTemplate { parts: Vec::new(), ..template.clone() };
+        for &(print_part_id, qty) in usable.iter().filter(|u| u.1 != 0) {
+            let planned = template.qty_of(print_part_id);
+            if planned == 0 {
+                return Err(Error::Invalid("Das Druckteil gehört nicht zur Platte".into()));
+            }
+            if !(0..=planned).contains(&qty) {
+                return Err(Error::Invalid(format!("Brauchbare Teile: 0 bis {planned} Stück je Platte möglich")));
+            }
+            good.parts.push(TemplatePart { print_part_id, qty });
+        }
         let now = self.now()?;
         let tx = self.conn.unchecked_transaction()?;
         let started = if job.started_at.is_empty() { now.clone() } else { job.started_at.clone() };
@@ -466,7 +489,7 @@ impl Db {
             "UPDATE print_job SET status = 'failed', started_at = ?1, finished_at = ?2, used_g = ?3 WHERE id = ?4",
             params![started, now, used_g, id],
         )?;
-        self.book_job_stock(&job, &template, used_g, false, &now[..10])?;
+        self.book_job_stock(&job, &good, used_g, true, &now[..10])?;
         tx.commit()?;
         Ok(())
     }
@@ -895,13 +918,19 @@ mod tests {
         assert_eq!((db.stock_qty(housing).unwrap(), db.stock_qty(filament).unwrap()), (6, 940));
         assert!(db.finish_job(j1).is_err());
 
-        db.fail_job(j3, 20).unwrap();
-        assert_eq!((db.stock_qty(housing).unwrap(), db.stock_qty(filament).unwrap()), (6, 920));
+        assert_eq!(db.default_job_usage_g(j3).unwrap(), 60, "Standardmenge der Platte");
+        assert!(db.fail_job(j3, 20, &[(s.housing.id, 99)]).is_err(), "mehr brauchbar als auf der Platte");
+        assert!(db.fail_job(j3, 20, &[(s.housing.id + 1000, 1)]).is_err(), "Teil nicht auf der Platte");
+        assert!(db.fail_job(j3, -1, &[]).is_err());
+        db.fail_job(j3, 20, &[(s.housing.id, 2)]).unwrap();
+        assert_eq!((db.stock_qty(housing).unwrap(), db.stock_qty(filament).unwrap()), (8, 920));
+        let failed = db.list_jobs(true).unwrap().into_iter().find(|j| j.id == j3).unwrap();
+        assert_eq!((failed.status, failed.used_g, failed.parts_booked), (JobStatus::Failed, 20, 2));
         assert_eq!(db.list_jobs(true).unwrap().len(), 2);
 
         // Zurücknehmen macht die Buchungen rückgängig
         db.reopen_job(j1).unwrap();
-        assert_eq!((db.stock_qty(housing).unwrap(), db.stock_qty(filament).unwrap()), (0, 980));
+        assert_eq!((db.stock_qty(housing).unwrap(), db.stock_qty(filament).unwrap()), (2, 980));
         assert_eq!(db.list_jobs(false).unwrap().len(), 2);
         assert!(db.reopen_job(j2).is_err());
 

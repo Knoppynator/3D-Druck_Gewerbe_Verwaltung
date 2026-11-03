@@ -109,13 +109,7 @@ impl PurchaseParts {
                 widgets::text_row(ui, "Name", &mut self.form.name);
                 widgets::text_row(ui, "Einheit", &mut self.form.unit);
                 ui.label("Einkaufspreis je Einheit");
-                ui.add(
-                    egui::DragValue::new(&mut self.form.unit_cost_eur)
-                        .range(0.0..=100_000.0)
-                        .speed(0.001)
-                        .fixed_decimals(3)
-                        .suffix(" €"),
-                );
+                widgets::dec_drag(ui, &mut self.form.unit_cost_eur, 0.0..=100_000.0, 0.001, 3, " €");
                 ui.end_row();
                 widgets::int_row(ui, "Mindestbestand", &mut self.form.min_stock, "");
                 ui.label("Einzeln verkaufbar");
