@@ -116,6 +116,36 @@ const RASTER: u32 = 64;
 /// App-Symbol: Düse über drei Schichten (Schicht für Schicht).
 pub const APP_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#2a78d6"/><path d="M25 9h14v7l-7 7-7-7z" fill="#ffffff"/><rect x="20" y="29" width="24" height="6" rx="3" fill="#ffffff" fill-opacity="0.65"/><rect x="15" y="38" width="34" height="6" rx="3" fill="#ffffff" fill-opacity="0.82"/><rect x="10" y="47" width="44" height="6" rx="3" fill="#ffffff"/></svg>"##;
 
+/// Vereinfachtes App-Symbol für 32 px und kleiner (Infobereich, kleine `.ico`-Größen): weniger, dickere Schichten.
+pub const APP_SVG_SMALL: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#2a78d6"/><path d="M23 7h18v8l-9 9-9-9z" fill="#ffffff"/><rect x="17" y="30" width="30" height="9" rx="4.5" fill="#ffffff" fill-opacity="0.8"/><rect x="8" y="45" width="48" height="10" rx="5" fill="#ffffff"/></svg>"##;
+
+/// SVG als nicht vormultipliziertes RGBA (`size`×`size`), z. B. für Fenster-, Tray- und `.ico`-Symbole.
+pub(crate) fn rgba(svg: &str, size: u32) -> Vec<u8> {
+    rasterize(svg, size)
+        .map(|p| {
+            p.pixels()
+                .iter()
+                .flat_map(|px| {
+                    let c = px.demultiply();
+                    [c.red(), c.green(), c.blue(), c.alpha()]
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Kleines App-Symbol für den Infobereich, optional mit farbigem Statuspunkt unten rechts.
+pub fn tray_rgba(size: u32, dot: Option<Color32>) -> Vec<u8> {
+    let svg = match dot {
+        Some(c) => APP_SVG_SMALL.replace(
+            "</svg>",
+            &format!(r##"<circle cx="50" cy="50" r="13" fill="#{:02x}{:02x}{:02x}" stroke="#ffffff" stroke-width="5"/></svg>"##, c.r(), c.g(), c.b()),
+        ),
+        None => APP_SVG_SMALL.to_string(),
+    };
+    rgba(&svg, size)
+}
+
 /// Rastert ein SVG auf `size`×`size` Pixel (vormultipliziertes RGBA).
 fn rasterize(svg: &str, size: u32) -> Option<tiny_skia::Pixmap> {
     let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).ok()?;
@@ -190,18 +220,57 @@ pub fn app_texture(ctx: &egui::Context) -> Option<egui::TextureId> {
 /// App-Symbol für Fenster und Taskleiste (nicht vormultipliziertes RGBA).
 pub fn app_icon_data() -> egui::IconData {
     const SIZE: u32 = 256;
-    let rgba = rasterize(APP_SVG, SIZE)
-        .map(|p| {
-            p.pixels()
-                .iter()
-                .flat_map(|px| {
-                    let c = px.demultiply();
-                    [c.red(), c.green(), c.blue(), c.alpha()]
-                })
-                .collect()
+    egui::IconData { rgba: rgba(APP_SVG, SIZE), width: SIZE, height: SIZE }
+}
+
+/// Windows-Symboldatei (`.ico`) mit den üblichen Größen; bis 32 px die vereinfachte Fassung.
+/// Bilder als 32-Bit-BMP (BGRA, von unten nach oben) – das versteht jedes Windows ohne PNG-Encoder. Nur für den
+/// Test, der `assets/druckplaner.ico` erzeugt und prüft.
+#[cfg(test)]
+pub fn ico_bytes() -> Vec<u8> {
+    const SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+    let images: Vec<Vec<u8>> = SIZES
+        .iter()
+        .map(|&s| {
+            let rgba = rgba(if s <= 32 { APP_SVG_SMALL } else { APP_SVG }, s);
+            let mask_row = s.div_ceil(32) * 4;
+            let mut bmp = Vec::new();
+            for v in [40u32, s, s * 2] {
+                bmp.extend_from_slice(&v.to_le_bytes());
+            }
+            bmp.extend_from_slice(&1u16.to_le_bytes()); // Ebenen
+            bmp.extend_from_slice(&32u16.to_le_bytes()); // Bit je Pixel
+            for v in [0u32, s * s * 4 + mask_row * s, 0, 0, 0, 0] {
+                bmp.extend_from_slice(&v.to_le_bytes());
+            }
+            for y in (0..s).rev() {
+                for x in 0..s {
+                    let i = ((y * s + x) * 4) as usize;
+                    bmp.extend_from_slice(&[rgba[i + 2], rgba[i + 1], rgba[i], rgba[i + 3]]);
+                }
+            }
+            // AND-Maske: leer, die Transparenz steckt im Alphakanal
+            bmp.resize(bmp.len() + (mask_row * s) as usize, 0);
+            bmp
         })
-        .unwrap_or_default();
-    egui::IconData { rgba, width: SIZE, height: SIZE }
+        .collect();
+    let mut ico = Vec::new();
+    ico.extend_from_slice(&[0, 0, 1, 0]);
+    ico.extend_from_slice(&(SIZES.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * SIZES.len() as u32;
+    for (s, img) in SIZES.iter().zip(&images) {
+        let dim = if *s >= 256 { 0 } else { *s as u8 };
+        ico.extend_from_slice(&[dim, dim, 0, 0]);
+        ico.extend_from_slice(&1u16.to_le_bytes());
+        ico.extend_from_slice(&32u16.to_le_bytes());
+        ico.extend_from_slice(&(img.len() as u32).to_le_bytes());
+        ico.extend_from_slice(&offset.to_le_bytes());
+        offset += img.len() as u32;
+    }
+    for img in images {
+        ico.extend_from_slice(&img);
+    }
+    ico
 }
 
 #[cfg(test)]
@@ -226,5 +295,29 @@ mod tests {
         let at = |x: usize, y: usize| &icon.rgba[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4];
         assert_eq!(at(128, 200), &[255, 255, 255, 255]);
         assert_eq!(at(0, 0)[3], 0);
+    }
+
+    /// Die eingecheckte `assets/druckplaner.ico` muss zum Symbol passen; neu erzeugen mit
+    /// `DRUCKPLANER_WRITE_ICO=1 cargo test -p druckplaner ico`.
+    #[test]
+    fn ico_file_matches_the_svg() {
+        let bytes = ico_bytes();
+        assert_eq!(&bytes[0..6], &[0, 0, 1, 0, 7, 0]);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join("druckplaner.ico");
+        if std::env::var_os("DRUCKPLANER_WRITE_ICO").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+        }
+        assert_eq!(std::fs::read(&path).ok(), Some(bytes), "assets/druckplaner.ico ist veraltet");
+    }
+
+    #[test]
+    fn tray_icon_gets_a_status_dot() {
+        let plain = tray_rgba(32, None);
+        let busy = tray_rgba(32, Some(Color32::from_rgb(0x0c, 0xa3, 0x0c)));
+        assert_eq!(plain.len(), 32 * 32 * 4);
+        let at = |v: &[u8], x: usize, y: usize| v[(y * 32 + x) * 4..(y * 32 + x) * 4 + 3].to_vec();
+        assert_ne!(at(&plain, 25, 25), at(&busy, 25, 25), "Punkt unten rechts");
+        assert_eq!(at(&busy, 25, 25)[1], 0xa3);
     }
 }

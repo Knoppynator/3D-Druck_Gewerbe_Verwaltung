@@ -9,3 +9,7 @@ eframe = "0.32"
 rfd = "0.17"
 hayro = "0.7"
 resvg = { version = "0.47", default-features = false }
+tray-icon = { version = "0.26", default-features = false }
+
+[build-dependencies]
+winresource = { version = "0.1", default-features = false }

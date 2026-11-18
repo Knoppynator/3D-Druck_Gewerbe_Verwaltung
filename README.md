@@ -101,6 +101,15 @@ Absatz der Vergangenheit zu niedrig.
 Eigene Rechnungsvorlage: [crates/core/templates/rechnung.typ](crates/core/templates/rechnung.typ) nach
 `<Datenordner>\vorlagen\rechnung.typ` kopieren und anpassen; „PDF neu erzeugen“ wendet sie an.
 
+## Oberfläche
+
+Gestaltung und Bausteine: [UI-KONZEPT.md](UI-KONZEPT.md).
+- **Navigation:** Symbole je Seite und Zähler, z. B. offene Punkte, „überfällig“ bei Rechnungen, grüner Punkt solange
+  gedruckt wird, gelber bei knappem Lager. Unten steht die letzte Sicherung.
+- **Design:** Hell, Dunkel oder wie Windows, einstellbar unter *Einstellungen › Darstellung*.
+- **Infobereich (Tray):** Der Tooltip zeigt Druckstatus und Druckende, ein Klick holt das Fenster nach vorn.
+- **Datumsfelder:** Mit dem Kalender-Symbol öffnet sich ein Mini-Kalender.
+
 ## Aufbau
 
 - `crates/core` – Datenbank, Migrationen, Fachlogik (ohne UI)

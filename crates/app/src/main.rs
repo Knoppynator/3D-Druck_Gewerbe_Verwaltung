@@ -131,6 +131,8 @@ struct NavBadges {
     todo: usize,
     open_orders: i64,
     printing: bool,
+    /// voraussichtliches Ende des laufenden Drucks (`JJJJ-MM-TT HH:MM`)
+    printing_until: String,
     queued: usize,
     overdue: bool,
     low_stock: i64,
@@ -149,14 +151,31 @@ impl NavBadges {
             b.overdue = t.overdue_cents > 0;
             b.low_stock = t.low_stock;
         }
-        if let Ok(jobs) = db.list_jobs(false) {
-            b.printing = jobs.iter().any(|j| j.status == JobStatus::Printing);
-            b.queued = jobs.len();
+        if let Ok(schedule) = db.schedule() {
+            let running = schedule.jobs.iter().find(|j| j.job.status == JobStatus::Printing);
+            b.printing = running.is_some();
+            b.printing_until = running.map(|j| j.end.clone()).unwrap_or_default();
+            b.queued = schedule.jobs.len();
         }
         if let Some(latest) = db.list_backups().ok().and_then(|l| l.into_iter().next()) {
             b.last_backup = druckplaner_core::date::format_datetime_de(&latest.label());
         }
         b
+    }
+
+    /// Text für das Symbol im Infobereich und ob gerade gedruckt wird.
+    fn tray_status(&self) -> (String, bool) {
+        let mut text = if self.printing {
+            format!("Druckplaner – Druck läuft, fertig ca. {}", druckplaner_core::date::format_datetime_de(&self.printing_until))
+        } else if self.queued > 0 {
+            format!("Druckplaner – Drucker frei, {} Job(s) geplant", self.queued)
+        } else {
+            "Druckplaner".to_string()
+        };
+        if self.todo > 0 {
+            text.push_str(&format!(" · {} offene Punkte", self.todo));
+        }
+        (text, self.printing)
     }
 
     fn badge(&self, page: Page) -> Badge {
@@ -436,6 +455,56 @@ impl Main {
 
 struct App {
     inner: Result<Main, String>,
+    tray: Option<Tray>,
+}
+
+/// Symbol im Infobereich: Tooltip und grüner Punkt folgen dem Druckstatus, ein Klick holt das Fenster nach vorn.
+struct Tray {
+    icon: tray_icon::TrayIcon,
+    events: std::sync::mpsc::Receiver<tray_icon::TrayIconEvent>,
+    /// zuletzt gesetzter Tooltip und Statuspunkt
+    shown: (String, bool),
+}
+
+impl Tray {
+    const SIZE: u32 = 32;
+
+    fn new(ctx: &egui::Context) -> Option<Tray> {
+        let (tx, events) = std::sync::mpsc::channel();
+        let repaint = ctx.clone();
+        // Klicks kommen außerhalb von egui an: weiterreichen und ein neues Bild anfordern, damit sie sofort wirken
+        tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
+            let _ = tx.send(event);
+            repaint.request_repaint();
+        }));
+        let image = tray_icon::Icon::from_rgba(icons::tray_rgba(Self::SIZE, None), Self::SIZE, Self::SIZE).ok()?;
+        let icon = tray_icon::TrayIconBuilder::new().with_icon(image).with_tooltip("Druckplaner").build().ok()?;
+        Some(Tray { icon, events, shown: ("Druckplaner".to_string(), false) })
+    }
+
+    fn update(&mut self, ctx: &egui::Context, tooltip: String, busy: bool) {
+        while let Ok(event) = self.events.try_recv() {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        }
+        if self.shown.1 != busy {
+            let dot = busy.then_some(theme::LIGHT.good);
+            if let Ok(image) = tray_icon::Icon::from_rgba(icons::tray_rgba(Self::SIZE, dot), Self::SIZE, Self::SIZE) {
+                let _ = self.icon.set_icon(Some(image));
+            }
+        }
+        if self.shown.0 != tooltip {
+            let _ = self.icon.set_tooltip(Some(&tooltip));
+        }
+        self.shown = (tooltip, busy);
+    }
 }
 
 impl Main {
@@ -462,7 +531,13 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         match &mut self.inner {
-            Ok(main) => main.show(ctx),
+            Ok(main) => {
+                main.show(ctx);
+                if let Some(tray) = &mut self.tray {
+                    let (tooltip, busy) = main.badges.tray_status();
+                    tray.update(ctx, tooltip, busy);
+                }
+            }
             Err(msg) => {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Datenbank konnte nicht geöffnet werden");
@@ -495,7 +570,11 @@ fn main() -> eframe::Result<()> {
                     theme::apply(&cc.egui_ctx, theme::Mode::Light);
                 }
             }
-            Ok(Box::new(App { inner }))
+            let tray = Tray::new(&cc.egui_ctx);
+            if let (None, Ok(main)) = (&tray, &mut inner) {
+                main.status = "Hinweis: Das Symbol im Infobereich ließ sich nicht anlegen.".to_string();
+            }
+            Ok(Box::new(App { inner, tray }))
         }),
     )
 }

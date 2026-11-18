@@ -102,13 +102,19 @@ Alles geht mit dem vorhandenen Framework. Die einzige neue Abhängigkeit ist opt
 Jede Phase endet mit `cargo test`, `cargo clippy` und einem Commit auf `UI-Update`. Gemergt wird erst, wenn alles
 ausprobiert ist.
 
-## Offene Entscheidungen
+**Stand:** Alle fünf Phasen sind umgesetzt (Branch `UI-Update`).
 
-- **Infobereich:** Reicht das Symbol in Taskleiste/Fenster und an der `.exe`, oder soll die App zusätzlich ein echtes
-  Tray-Symbol mit Druckstatus bekommen (neue Abhängigkeit `tray-icon`)?
-- **Dunkles Design:** jetzt mitplanen oder später?
-- **Schrift Inter:** ok, oder lieber die Windows-Systemschrift Segoe UI (müsste zur Laufzeit aus `C:\Windows\Fonts`
-  geladen werden, nicht weitergebbar)?
+## Entscheidungen
+
+- **Schrift:** Segoe UI (Windows-Systemschrift, zur Laufzeit aus `C:\Windows\Fonts`, Halbfett aus `seguisb.ttf`); fehlt
+  sie, nimmt egui seine Standardschrift. Inter ließe sich später als eingebettete Schrift nachrüsten.
+- **Infobereich:** echtes Tray-Symbol mit `tray-icon`. Tooltip mit Druckstatus und offenen Punkten, grüner Punkt solange
+  gedruckt wird; Linksklick holt das Fenster nach vorn. Kein Menü, kein „in den Infobereich minimieren“.
+- **Dunkles Design:** umschaltbar in den Einstellungen (Hell, Dunkel, wie Windows); alle Farben kommen aus einer Palette
+  (`theme::p()`), die beim Umschalten wechselt.
+- **`.exe`-Symbol:** `assets/druckplaner.ico` (7 Größen, bis 32 px die vereinfachte Fassung) wird per `build.rs` mit
+  `winresource` eingebettet. Neu erzeugen nach Änderungen am SVG:
+  `DRUCKPLANER_WRITE_ICO=1 cargo test -p druckplaner ico` (der Test prüft sonst, dass die Datei aktuell ist).
 
 ## Risiken
 
