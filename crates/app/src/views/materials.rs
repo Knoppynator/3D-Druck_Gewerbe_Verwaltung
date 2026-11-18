@@ -1,4 +1,4 @@
-use druckplaner_core::{catalog::Material, Db};
+use druckplaner_core::{catalog::Material, money::format_eur, Db};
 use eframe::egui;
 
 use crate::widgets::{self, Action};
@@ -19,33 +19,28 @@ impl Materials {
     pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
         let mut act = Action::None;
 
-        egui::SidePanel::left("materials_list").default_width(240.0).show_inside(ui, |ui| {
-            if ui.button("Neues Material").clicked() {
-                act = Action::New;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for m in &self.items {
-                    if ui.selectable_label(self.form.id == m.id, m.label()).clicked() {
-                        act = Action::Select(m.id);
-                    }
-                }
-            });
-        });
+        let rows: Vec<(i64, String, String)> = self
+            .items
+            .iter()
+            .map(|m| (m.id, m.label(), format!("{} je kg{}", format_eur(m.price_per_kg_cents), if m.vendor.is_empty() { String::new() } else { format!(" · {}", m.vendor) })))
+            .collect();
+        let subtitle = format!("{} Sorte(n) – Werkstoff und Farbe, Preis, Mindestbestand und Lieferzeit", self.items.len());
+        widgets::master_list(ui, ("Filament", &subtitle, "Neues Filament"), "materials_list", &rows, self.form.id, &mut act);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.heading(if self.form.id == 0 { "Neues Material" } else { "Material bearbeiten" });
-            ui.add_space(8.0);
-            egui::Grid::new("material_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                widgets::text_row(ui, "Werkstoff (z. B. PETG)", &mut self.form.kind);
-                widgets::text_row(ui, "Farbe", &mut self.form.color);
-                widgets::text_row(ui, "Hersteller", &mut self.form.vendor);
-                widgets::eur_row(ui, "Preis pro kg", &mut self.form.price_per_kg_cents);
-                widgets::int_row(ui, "Mindestbestand", &mut self.form.min_stock_g, " g");
-                widgets::int_row(ui, "Lieferzeit", &mut self.form.lead_time_days, " Tage");
+        widgets::detail_panel(ui, |ui| {
+            let title = if self.form.id == 0 { "Neues Filament" } else { "Filament bearbeiten" };
+            widgets::card(ui, title, "", |ui| {
+                egui::Grid::new("material_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    widgets::text_row(ui, "Werkstoff (z. B. PETG)", &mut self.form.kind);
+                    widgets::text_row(ui, "Farbe", &mut self.form.color);
+                    widgets::text_row(ui, "Hersteller", &mut self.form.vendor);
+                    widgets::eur_row(ui, "Preis pro kg", &mut self.form.price_per_kg_cents);
+                    widgets::int_row(ui, "Mindestbestand", &mut self.form.min_stock_g, " g");
+                    widgets::int_row(ui, "Lieferzeit", &mut self.form.lead_time_days, " Tage");
+                });
+                ui.add_space(8.0);
+                widgets::form_buttons(ui, self.form.id != 0, &mut act);
             });
-            ui.add_space(8.0);
-            widgets::form_buttons(ui, self.form.id != 0, &mut act);
         });
 
         match act {

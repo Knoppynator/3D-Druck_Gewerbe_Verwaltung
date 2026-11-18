@@ -30,31 +30,24 @@ impl Assets {
         let mut act = Action::None;
         let error = ui.visuals().error_fg_color;
 
-        egui::SidePanel::left("assets_list").default_width(300.0).show_inside(ui, |ui| {
-            if ui.button("Neue Anlage").clicked() {
-                act = Action::New;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for a in &self.items {
-                    let text = format!("{}\n{} · {} · {}", a.name, format_de(&a.acquired_at), format_eur(a.cost_cents), a.method.label());
-                    if ui.selectable_label(self.form.id == a.id, text).clicked() {
-                        act = Action::Select(a.id);
-                    }
-                }
-            });
-        });
+        let rows: Vec<(i64, String, String)> = self
+            .items
+            .iter()
+            .map(|a| (a.id, a.name.clone(), format!("{} · {} · {}", format_de(&a.acquired_at), format_eur(a.cost_cents), a.method.label())))
+            .collect();
+        let subtitle = format!("{} Anlage(n) – GWG oder lineare Abschreibung", self.items.len());
+        widgets::master_list(ui, ("Anlagen", &subtitle, "Neue Anlage"), "assets_list", &rows, self.form.id, &mut act);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading(if self.form.id == 0 { "Neue Anlage" } else { "Anlage bearbeiten" });
-                ui.add_space(8.0);
+        widgets::detail_panel(ui, |ui| {
+            widgets::card_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                widgets::card_title(ui, if self.form.id == 0 { "Neue Anlage" } else { "Anlage bearbeiten" }, "", |_| {});
                 let before_expense = self.form.expense_id;
                 egui::Grid::new("asset_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                     widgets::text_row(ui, "Bezeichnung", &mut self.form.name);
                     widgets::date_row(ui, "Anschaffung", &mut self.form.acquired_at);
                     widgets::eur_row(ui, "Anschaffungskosten", &mut self.form.cost_cents);
-                    ui.label("Abschreibung");
+                    widgets::form_label(ui, "Abschreibung");
                     egui::ComboBox::from_id_salt("asset_method")
                         .selected_text(self.form.method.label())
                         .show_ui(ui, |ui| {
@@ -66,7 +59,7 @@ impl Assets {
                     if self.form.method == AssetMethod::Linear {
                         widgets::int_row(ui, "Nutzungsdauer", &mut self.form.useful_life_years, " Jahre");
                     }
-                    ui.label("Zugehörige Ausgabe");
+                    widgets::form_label(ui, "Zugehörige Ausgabe");
                     egui::ComboBox::from_id_salt("asset_expense")
                         .width(360.0)
                         .selected_text(
@@ -109,16 +102,16 @@ impl Assets {
                 if self.form.method == AssetMethod::Gwg && self.form.cost_cents > GWG_LIMIT_CENTS {
                     ui.colored_label(error, "Über 800 € ist ein GWG nicht möglich – bitte linear abschreiben.");
                 } else if self.form.method == AssetMethod::Gwg {
-                    ui.weak("GWG: sofort abziehbar. Die zugehörige Ausgabe bleibt als normale Betriebsausgabe in der EÜR.");
+                    widgets::hint(ui, "GWG: sofort abziehbar. Die zugehörige Ausgabe bleibt als normale Betriebsausgabe in der EÜR.");
                 } else {
-                    ui.weak("Linear: Die zugehörige Ausgabe zählt nicht mehr als Betriebsausgabe, stattdessen die AfA je Jahr (monatsgenau ab Anschaffung).");
+                    widgets::hint(ui, "Linear: Die zugehörige Ausgabe zählt nicht mehr als Betriebsausgabe, stattdessen die AfA je Jahr (monatsgenau ab Anschaffung).");
                     if self.form.expense_id.is_none() {
                         ui.colored_label(error, "Ohne zugehörige Ausgabe werden Anschaffungskosten und AfA doppelt gezählt, sobald die Ausgabe separat erfasst ist.");
                     }
                     let schedule = self.form.schedule();
                     if !schedule.is_empty() {
                         ui.add_space(4.0);
-                        ui.strong("Abschreibung je Jahr");
+                        widgets::sub_heading(ui, "Abschreibung je Jahr");
                         egui::Grid::new("asset_schedule").spacing([16.0, 3.0]).show(ui, |ui| {
                             for (year, cents) in schedule {
                                 ui.label(year.to_string());

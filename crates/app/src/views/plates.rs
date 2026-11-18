@@ -58,23 +58,22 @@ impl Plates {
         let mut act = Action::None;
         let mut extra = Extra::None;
 
-        egui::SidePanel::left("plates_list").default_width(280.0).show_inside(ui, |ui| {
-            if ui.button("Neue Plattenvorlage").clicked() {
-                act = Action::New;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for t in &self.items {
-                    let text = format!("{}\n{} · {} g", t.name, t.duration_label(), widgets::dec(t.filament_g, 0));
-                    if ui.selectable_label(self.form.id == t.id, text).clicked() {
-                        act = Action::Select(t.id);
-                    }
-                }
-            });
-        });
+        let rows: Vec<(i64, String, String)> = self
+            .items
+            .iter()
+            .map(|t| {
+                let parts: i64 = t.parts.iter().map(|p| p.qty).sum();
+                (t.id, t.name.clone(), format!("{} · {} g · {parts} Teil(e)", t.duration_label(), widgets::dec(t.filament_g, 0)))
+            })
+            .collect();
+        let subtitle = format!("{} Platte(n) – Druckzeit, Filament und Teile je Platte, gern aus einer .3mf-Datei", self.items.len());
+        widgets::master_list(ui, ("Plattenvorlagen", &subtitle, "Neue Plattenvorlage"), "plates_list", &rows, self.form.id, &mut act);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.detail_ui(ui, &mut act, &mut extra));
+        widgets::detail_panel(ui, |ui| {
+            widgets::card_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                self.detail_ui(ui, &mut act, &mut extra);
+            });
         });
 
         match extra {
@@ -171,8 +170,7 @@ impl Plates {
     }
 
     fn detail_ui(&mut self, ui: &mut egui::Ui, act: &mut Action, extra: &mut Extra) {
-        ui.heading(if self.form.id == 0 { "Neue Plattenvorlage" } else { "Plattenvorlage bearbeiten" });
-        ui.add_space(8.0);
+        widgets::card_title(ui, if self.form.id == 0 { "Neue Plattenvorlage" } else { "Plattenvorlage bearbeiten" }, "", |_| {});
 
         ui.horizontal(|ui| {
             if ui
@@ -183,9 +181,9 @@ impl Plates {
                 *extra = Extra::PickFile;
             }
             if let Some(f) = &self.pending_file {
-                ui.weak(format!("Datei wird beim Speichern abgelegt: {}", f.file_name().and_then(|n| n.to_str()).unwrap_or("")));
+                widgets::hint(ui, &format!("Datei wird beim Speichern abgelegt: {}", f.file_name().and_then(|n| n.to_str()).unwrap_or("")));
             } else if !self.form.file_3mf.is_empty() {
-                ui.weak(format!("Abgelegt: {}", self.form.file_3mf));
+                widgets::hint(ui, &format!("Abgelegt: {}", self.form.file_3mf));
             }
         });
         self.import_ui(ui, extra);
@@ -193,7 +191,7 @@ impl Plates {
 
         egui::Grid::new("plate_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             widgets::text_row(ui, "Name", &mut self.form.name);
-            ui.label("Werkstoff");
+            widgets::form_label(ui, "Werkstoff");
             egui::ComboBox::from_id_salt("plate_kind")
                 .width(200.0)
                 .selected_text(if self.form.material_kind.is_empty() { "(beliebig)" } else { self.form.material_kind.as_str() })
@@ -204,7 +202,7 @@ impl Plates {
                     }
                 });
             ui.end_row();
-            ui.label("Druckzeit");
+            widgets::form_label(ui, "Druckzeit");
             ui.horizontal(|ui| {
                 let mut hours = self.form.print_seconds / 3600;
                 let mut minutes = (self.form.print_seconds % 3600) / 60;
@@ -215,16 +213,16 @@ impl Plates {
                 }
             });
             ui.end_row();
-            ui.label("Filament");
+            widgets::form_label(ui, "Filament");
             widgets::dec_drag(ui, &mut self.form.filament_g, 0.0..=100_000.0, 0.5, 1, " g");
             ui.end_row();
             widgets::text_row(ui, "Notiz", &mut self.form.note);
         });
 
         ui.add_space(10.0);
-        ui.strong("Teile auf der Platte");
+        widgets::sub_heading(ui, "Teile auf der Platte");
         if self.print_parts.is_empty() {
-            ui.label("Lege zuerst unter Stammdaten › Druckteile die Teile an.");
+            widgets::hint(ui, "Lege zuerst unter Stammdaten › Druckteile die Teile an.");
         }
         let mut remove = None;
         for (i, p) in self.form.parts.iter_mut().enumerate() {
@@ -284,7 +282,7 @@ impl Plates {
             }
 
             ui.add_space(4.0);
-            ui.strong("Objekt → Druckteil");
+            widgets::sub_heading(ui, "Objekt → Druckteil");
             if let Some(plate) = plate {
                 for c in plate.object_counts() {
                     ui.horizontal(|ui| {
@@ -300,7 +298,7 @@ impl Plates {
                     });
                 }
             }
-            ui.weak("Hilfskörper wie Verbinder-Würfel auf „ignorieren“ lassen. Deine Zuordnung wird für künftige Importe gemerkt.");
+            widgets::hint(ui, "Hilfskörper wie Verbinder-Würfel auf „ignorieren“ lassen. Deine Zuordnung wird für künftige Importe gemerkt.");
             ui.horizontal(|ui| {
                 if ui.button("Werte übernehmen").clicked() {
                     *extra = Extra::Adopt;

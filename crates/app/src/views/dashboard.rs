@@ -170,19 +170,6 @@ fn legend(ui: &mut egui::Ui, names: &[String]) {
     });
 }
 
-/// Zwei Bereiche nebeneinander, wenn genug Platz ist, sonst untereinander.
-fn two_up(ui: &mut egui::Ui, left: impl FnOnce(&mut egui::Ui), right: impl FnOnce(&mut egui::Ui)) {
-    if ui.available_width() >= 900.0 {
-        ui.columns(2, |cols| {
-            left(&mut cols[0]);
-            right(&mut cols[1]);
-        });
-    } else {
-        left(ui);
-        right(ui);
-    }
-}
-
 impl DashboardView {
     pub fn reload(&mut self, db: &Db, status: &mut String) {
         if let Some(v) = widgets::report(status, db.dashboard_tiles(), "") {
@@ -214,8 +201,8 @@ impl DashboardView {
                 }
             });
             self.alerts_ui(ui);
-            two_up(ui, |ui| self.hero_ui(ui), |ui| self.stats_ui(ui));
-            two_up(ui, |ui| self.chart_ui(ui, true), |ui| self.chart_ui(ui, false));
+            widgets::two_up(ui, 900.0, |ui| self.hero_ui(ui), |ui| self.stats_ui(ui));
+            widgets::two_up(ui, 900.0, |ui| self.chart_ui(ui, true), |ui| self.chart_ui(ui, false));
             if self.projection.unknown_units_invoices > 0 {
                 let text = format!(
                     "Bei {} importierten Altrechnungen fehlt die Stückzahl (unter Rechnungen nachtragen) – bis dahin ist der Absatz zu niedrig.",
@@ -223,7 +210,7 @@ impl DashboardView {
                 );
                 widgets::alert(ui, Tone::Warn, "", &text, None);
             }
-            two_up(ui, |ui| self.reach_ui(ui), |ui| self.margin_ui(ui));
+            widgets::two_up(ui, 900.0, |ui| self.reach_ui(ui), |ui| self.margin_ui(ui));
         });
         if refresh {
             self.reload(db, status);
@@ -300,12 +287,17 @@ impl DashboardView {
     }
 
     fn chart_ui(&self, ui: &mut egui::Ui, revenue: bool) {
-        let (title, data, fmt): (&str, Vec<(String, f64)>, &dyn Fn(f64) -> String) = if revenue {
-            ("Umsatz je Monat", self.months.iter().map(|m| (month_label(&m.month), m.revenue_cents as f64 / 100.0)).collect(), &eur_short)
+        let data: Vec<(String, f64)> = self
+            .months
+            .iter()
+            .map(|m| (month_label(&m.month), if revenue { m.revenue_cents as f64 / 100.0 } else { m.units as f64 }))
+            .collect();
+        let hint = "letzte 12 Monate · laufender Monat heller";
+        if revenue {
+            widgets::card(ui, "Umsatz je Monat", hint, |ui| bar_chart(ui, &data, &eur_short));
         } else {
-            ("Absatz je Monat (Sets)", self.months.iter().map(|m| (month_label(&m.month), m.units as f64)).collect(), &|v: f64| format!("{v:.0}"))
-        };
-        widgets::card(ui, title, "letzte 12 Monate · laufender Monat heller", |ui| bar_chart(ui, &data, fmt));
+            widgets::card(ui, "Absatz je Monat (Sets)", hint, |ui| bar_chart(ui, &data, &|v: f64| format!("{v:.0}")));
+        }
     }
 
     fn reach_ui(&self, ui: &mut egui::Ui) {

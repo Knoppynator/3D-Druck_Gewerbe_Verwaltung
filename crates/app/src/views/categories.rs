@@ -19,32 +19,29 @@ impl Categories {
     pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
         let mut act = Action::None;
 
-        egui::SidePanel::left("categories_list").default_width(260.0).show_inside(ui, |ui| {
-            if ui.button("Neue Kategorie").clicked() {
-                act = Action::New;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for c in &self.items {
-                    if ui.selectable_label(self.form.id == c.id, c.name.as_str()).clicked() {
-                        act = Action::Select(c.id);
-                    }
-                }
-            });
-        });
+        let rows: Vec<(i64, String, String)> = self
+            .items
+            .iter()
+            .map(|c| {
+                let line = if c.euer_line.is_empty() { String::new() } else { format!("Zeile {} · ", c.euer_line) };
+                (c.id, c.name.clone(), format!("{line}{}", c.euer_label))
+            })
+            .collect();
+        let subtitle = format!("{} Kategorie(n) für Ausgaben und ihre Zeile in der EÜR", self.items.len());
+        widgets::master_list(ui, ("Kategorien", &subtitle, "Neue Kategorie"), "categories_list", &rows, self.form.id, &mut act);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.heading(if self.form.id == 0 { "Neue Ausgaben-Kategorie" } else { "Kategorie bearbeiten" });
-            ui.add_space(8.0);
-            egui::Grid::new("category_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                widgets::text_row(ui, "Name", &mut self.form.name);
-                widgets::text_row(ui, "EÜR-Zeile", &mut self.form.euer_line);
-                widgets::text_row(ui, "EÜR-Bezeichnung", &mut self.form.euer_label);
+        widgets::detail_panel(ui, |ui| {
+            let title = if self.form.id == 0 { "Neue Ausgaben-Kategorie" } else { "Kategorie bearbeiten" };
+            widgets::card(ui, title, "", |ui| {
+                egui::Grid::new("category_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    widgets::text_row(ui, "Name", &mut self.form.name);
+                    widgets::text_row(ui, "EÜR-Zeile", &mut self.form.euer_line);
+                    widgets::text_row(ui, "EÜR-Bezeichnung", &mut self.form.euer_label);
+                });
+                widgets::hint(ui, "Die Zeilennummern ändern sich von Jahr zu Jahr – bitte anhand des aktuellen ELSTER-Formulars eintragen.");
+                ui.add_space(8.0);
+                widgets::form_buttons(ui, self.form.id != 0, &mut act);
             });
-            ui.add_space(4.0);
-            ui.weak("Die Zeilennummern ändern sich von Jahr zu Jahr – bitte anhand des aktuellen ELSTER-Formulars eintragen.");
-            ui.add_space(8.0);
-            widgets::form_buttons(ui, self.form.id != 0, &mut act);
         });
 
         match act {

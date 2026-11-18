@@ -6,7 +6,10 @@ use druckplaner_core::{
 };
 use eframe::egui;
 
-use crate::widgets;
+use crate::{
+    theme,
+    widgets::{self, Tone},
+};
 
 enum Act {
     None,
@@ -68,16 +71,19 @@ impl StockView {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
         let mut act = Act::None;
-        let error = ui.visuals().error_fg_color;
 
-        egui::SidePanel::left("stock_list").default_width(330.0).show_inside(ui, |ui| {
+        let low = self.levels.iter().filter(|l| l.below_min() || l.qty < 0).count();
+        let subtitle = format!(
+            "{} Posten · {low} unter Mindestbestand · Bestand = Summe aller Bewegungen (Lieferungen und Druckjobs buchen automatisch)",
+            self.levels.len()
+        );
+        widgets::page_header(ui, "Lager", &subtitle, |_| {});
+
+        widgets::list_panel(ui, "stock_list", |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                for (title, filter) in [
-                    ("Filament", 0),
-                    ("Fertige Druckteile", 1),
-                    ("Zukaufteile", 2),
-                ] {
-                    ui.strong(title);
+                for (title, filter) in [("FILAMENT", 0), ("FERTIGE DRUCKTEILE", 1), ("ZUKAUFTEILE", 2)] {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(title).size(11.0).family(theme::semibold()).color(theme::p().muted));
                     let mut any = false;
                     for l in self.levels.iter().filter(|l| {
                         matches!(
@@ -86,144 +92,179 @@ impl StockView {
                         )
                     }) {
                         any = true;
-                        let mut text = egui::RichText::new(format!("{}   {} {}", l.name, l.qty, l.unit));
-                        if l.below_min() || l.qty < 0 {
-                            text = text.color(error);
+                        let qty = format!("{} {}", l.qty, l.unit);
+                        let mut entry = widgets::ListEntry::new(&l.name);
+                        entry.right = &qty;
+                        if l.qty < 0 {
+                            entry.chip = Some((Tone::Critical, "negativ – Inventur fehlt"));
+                        } else if l.below_min() {
+                            entry.chip = Some((Tone::Critical, "unter Mindestbestand"));
                         }
-                        if ui.selectable_label(self.selected == Some(l.key), text).clicked() {
+                        if widgets::list_entry(ui, ("stock", format!("{:?}", l.key)), self.selected == Some(l.key), &entry).clicked() {
                             act = Act::Select(l.key);
                         }
                     }
                     if !any {
-                        ui.weak("noch keine Posten");
+                        widgets::hint(ui, "noch keine Posten");
                     }
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
                 }
             });
         });
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.detail_ui(ui, &mut act, error));
-        });
+        widgets::detail_panel(ui, |ui| self.detail_ui(ui, &mut act));
 
         self.handle(act, db, status);
     }
 
-    fn detail_ui(&mut self, ui: &mut egui::Ui, act: &mut Act, error: egui::Color32) {
+    fn detail_ui(&mut self, ui: &mut egui::Ui, act: &mut Act) {
+        let c = theme::p();
         let Some(key) = self.selected else {
-            ui.heading("Lager");
-            ui.label("Posten links auswählen. Der Bestand ist die Summe aller Bewegungen: Wareneingang (bei den Ausgaben buchen), Lieferungen und Druckjobs buchen automatisch aus.");
-            ui.add_space(12.0);
+            widgets::card(ui, "Kein Posten gewählt", "", |ui| {
+                widgets::hint(
+                    ui,
+                    "Posten links auswählen. Der Bestand ist die Summe aller Bewegungen: Wareneingang (bei den Ausgaben buchen), \
+                     Lieferungen und Druckjobs buchen automatisch aus.",
+                );
+            });
             self.finished_part_picker(ui, act);
             return;
         };
         let (name, unit) = self.selected_label.clone();
         let level = self.levels.iter().find(|l| l.key == key).cloned();
-        ui.heading(&name);
         let qty = level.as_ref().map_or(0, |l| l.qty);
-        ui.label(egui::RichText::new(format!("Bestand: {qty} {unit}")).size(16.0).strong());
-        if let Some(l) = &level {
-            if l.min_qty > 0 {
-                let text = format!("Mindestbestand {} {unit}", l.min_qty);
-                if l.below_min() {
-                    ui.colored_label(error, format!("{text} – unterschritten, nachbestellen"));
-                } else {
-                    ui.label(text);
-                }
-            }
-            if l.consumed_90d > 0 {
-                let range = l.days_left().map_or(String::new(), |d| format!(" – reicht noch ca. {d} Tage"));
-                ui.label(format!("Verbrauch letzte 90 Tage: {} {unit}{range}", l.consumed_90d));
-                if l.lead_time_days > 0 {
-                    ui.weak(format!("Lieferzeit {} Tage", l.lead_time_days));
-                }
-            }
-        }
-        if qty < 0 {
-            ui.colored_label(error, "Negativer Bestand – wahrscheinlich fehlt der Anfangsbestand. Mit einer Inventur korrigieren.");
-        }
 
-        ui.add_space(10.0);
-        ui.strong("Buchen");
-        ui.horizontal(|ui| {
-            ui.label("Menge");
-            ui.add(egui::DragValue::new(&mut self.amount).range(0..=10_000_000).suffix(format!(" {unit}")));
-            ui.add(egui::TextEdit::singleline(&mut self.note).desired_width(200.0).hint_text("Notiz"));
-            if ui.button("Zugang").clicked() {
-                *act = Act::Add;
-            }
-            if ui.button("Ausschuss / Abgang").clicked() {
-                *act = Act::Scrap;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Gezählt");
-            ui.add(egui::DragValue::new(&mut self.counted).range(0..=10_000_000).suffix(format!(" {unit}")));
-            if ui.button("Inventur buchen").on_hover_text("Setzt den Bestand auf die gezählte Menge").clicked() {
-                *act = Act::Inventory;
-            }
-        });
-        if matches!(key, StockKey::PrintPart { .. }) {
+        // Kopfkarte: Bestand groß, darunter Zustand
+        widgets::card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            widgets::hint(ui, &name);
             ui.horizontal(|ui| {
-                ui.label("Mindestbestand");
-                ui.add(egui::DragValue::new(&mut self.min_edit).range(0..=100_000).suffix(format!(" {unit}")));
-                if ui.button("Speichern").on_hover_text("Die Produktion füllt den Bestand bei freier Druckerzeit auf diesen Wert auf (0 = kein Mindestbestand)").clicked() {
-                    *act = Act::SetMin;
+                ui.label(theme::strong(format!("{qty} {unit}"), 30.0));
+                if qty < 0 {
+                    widgets::chip(ui, Tone::Critical, "negativer Bestand");
+                } else if level.as_ref().is_some_and(|l| l.below_min()) {
+                    widgets::chip(ui, Tone::Critical, "unter Mindestbestand");
+                } else {
+                    widgets::chip(ui, Tone::Good, "im Soll");
                 }
             });
-        }
-        if matches!(key, StockKey::Filament { .. } | StockKey::PurchasePart { .. }) {
-            ui.weak("Wareneingang aus einer Einkaufsrechnung buchst du bei der Ausgabe („Wareneingang“), dann wird auch der Einkaufspreis aktualisiert.");
-        }
-
-        ui.add_space(10.0);
-        ui.strong("Bewegungen");
-        egui::Grid::new("stock_moves").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-            for m in &self.moves {
-                ui.label(format_de(&m.moved_at));
-                ui.label(reason_label(&m.reason));
-                let sign = if m.qty > 0 { "+" } else { "" };
-                ui.label(format!("{sign}{} {unit}", m.qty));
-                ui.label(m.note.as_str());
-                if m.is_manual() {
-                    if ui.small_button("×").on_hover_text("Bewegung löschen").clicked() {
-                        *act = Act::DeleteMove(m.id);
-                    }
-                } else {
-                    ui.label("");
+            if let Some(l) = &level {
+                let mut facts = Vec::new();
+                if l.min_qty > 0 {
+                    facts.push(format!("Mindestbestand {} {unit}", l.min_qty));
                 }
+                if l.consumed_90d > 0 {
+                    facts.push(format!("Verbrauch 90 Tage {} {unit}", l.consumed_90d));
+                    if let Some(d) = l.days_left() {
+                        facts.push(format!("reicht noch ca. {d} Tage"));
+                    }
+                }
+                if l.lead_time_days > 0 {
+                    facts.push(format!("Lieferzeit {} Tage", l.lead_time_days));
+                }
+                if !facts.is_empty() {
+                    ui.label(egui::RichText::new(facts.join(" · ")).color(c.text_soft));
+                }
+            }
+            if qty < 0 {
+                ui.colored_label(c.critical_text, "Wahrscheinlich fehlt der Anfangsbestand – mit einer Inventur korrigieren.");
+            }
+        });
+        ui.add_space(4.0);
+
+        widgets::card(ui, "Buchen", "", |ui| {
+            egui::Grid::new("stock_book").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                widgets::form_label(ui, "Menge");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.amount).range(0..=10_000_000).suffix(format!(" {unit}")));
+                    ui.add(egui::TextEdit::singleline(&mut self.note).desired_width(200.0).hint_text("Notiz"));
+                    if widgets::soft_button(ui, "Zugang").clicked() {
+                        *act = Act::Add;
+                    }
+                    if widgets::danger_button(ui, "Ausschuss / Abgang").clicked() {
+                        *act = Act::Scrap;
+                    }
+                });
                 ui.end_row();
+                widgets::form_label(ui, "Gezählt");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.counted).range(0..=10_000_000).suffix(format!(" {unit}")));
+                    if ui.button("Inventur buchen").on_hover_text("Setzt den Bestand auf die gezählte Menge").clicked() {
+                        *act = Act::Inventory;
+                    }
+                });
+                ui.end_row();
+                if matches!(key, StockKey::PrintPart { .. }) {
+                    widgets::form_label(ui, "Mindestbestand");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut self.min_edit).range(0..=100_000).suffix(format!(" {unit}")));
+                        if ui
+                            .button("Speichern")
+                            .on_hover_text("Die Produktion füllt den Bestand bei freier Druckerzeit auf diesen Wert auf (0 = kein Mindestbestand)")
+                            .clicked()
+                        {
+                            *act = Act::SetMin;
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            if matches!(key, StockKey::Filament { .. } | StockKey::PurchasePart { .. }) {
+                widgets::hint(ui, "Wareneingang aus einer Einkaufsrechnung buchst du bei der Ausgabe („Wareneingang“), dann wird auch der Einkaufspreis aktualisiert.");
             }
         });
 
-        ui.add_space(16.0);
-        ui.separator();
+        widgets::card(ui, "Bewegungen", "die letzten 60", |ui| {
+            if self.moves.is_empty() {
+                widgets::hint(ui, "Noch keine Bewegungen.");
+            }
+            egui::Grid::new("stock_moves").striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
+                for m in &self.moves {
+                    ui.label(format_de(&m.moved_at));
+                    ui.label(reason_label(&m.reason));
+                    let (sign, color) = if m.qty > 0 { ("+", c.good_text) } else { ("", c.text) };
+                    ui.label(egui::RichText::new(format!("{sign}{} {unit}", m.qty)).family(theme::semibold()).color(color));
+                    widgets::hint(ui, m.note.as_str());
+                    if m.is_manual() {
+                        if ui.small_button("×").on_hover_text("Bewegung löschen").clicked() {
+                            *act = Act::DeleteMove(m.id);
+                        }
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+
         self.finished_part_picker(ui, act);
     }
 
     /// Fertigteil-Posten (Druckteil + Farbe) neu anlegen, bevor die erste Bewegung gebucht wird.
     fn finished_part_picker(&mut self, ui: &mut egui::Ui, act: &mut Act) {
-        ui.strong("Fertigteil-Posten anlegen");
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("new_part")
-                .width(160.0)
-                .selected_text(self.print_parts.iter().find(|p| p.id == self.new_part).map_or("Druckteil", |p| p.name.as_str()))
-                .show_ui(ui, |ui| {
-                    for p in &self.print_parts {
-                        ui.selectable_value(&mut self.new_part, p.id, p.name.as_str());
-                    }
-                });
-            egui::ComboBox::from_id_salt("new_material")
-                .width(160.0)
-                .selected_text(self.materials.iter().find(|m| m.id == self.new_material).map_or("Material".to_string(), Material::label))
-                .show_ui(ui, |ui| {
-                    for m in &self.materials {
-                        ui.selectable_value(&mut self.new_material, m.id, m.label());
-                    }
-                });
-            if ui.add_enabled(self.new_part != 0 && self.new_material != 0, egui::Button::new("Auswählen")).clicked() {
-                *act = Act::Select(StockKey::PrintPart { print_part_id: self.new_part, material_id: self.new_material });
-            }
+        widgets::card(ui, "Fertigteil-Posten anlegen", "Druckteil in einer Farbe", |ui| {
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("new_part")
+                    .width(180.0)
+                    .selected_text(self.print_parts.iter().find(|p| p.id == self.new_part).map_or("Druckteil", |p| p.name.as_str()))
+                    .show_ui(ui, |ui| {
+                        for p in &self.print_parts {
+                            ui.selectable_value(&mut self.new_part, p.id, p.name.as_str());
+                        }
+                    });
+                egui::ComboBox::from_id_salt("new_material")
+                    .width(180.0)
+                    .selected_text(self.materials.iter().find(|m| m.id == self.new_material).map_or("Farbe".to_string(), Material::label))
+                    .show_ui(ui, |ui| {
+                        for m in &self.materials {
+                            ui.selectable_value(&mut self.new_material, m.id, m.label());
+                        }
+                    });
+                let ready = self.new_part != 0 && self.new_material != 0;
+                if ui.add_enabled_ui(ready, |ui| widgets::soft_button(ui, "Auswählen")).inner.clicked() {
+                    *act = Act::Select(StockKey::PrintPart { print_part_id: self.new_part, material_id: self.new_material });
+                }
+            });
         });
     }
 

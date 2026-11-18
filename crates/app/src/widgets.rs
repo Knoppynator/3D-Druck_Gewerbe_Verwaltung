@@ -174,6 +174,14 @@ fn calendar_menu(ui: &mut egui::Ui, id: egui::Id, iso: &mut String) -> bool {
 /// Ungültiger Text wird rot angezeigt und ändert das Datum nicht.
 pub fn date_edit(ui: &mut egui::Ui, salt: impl std::hash::Hash, iso: &mut String) {
     let id = ui.id().with(salt);
+    // Feld und Kalenderknopf als eine Einheit (auch in einer Grid-Zelle)
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        date_edit_inner(ui, id, iso);
+    });
+}
+
+fn date_edit_inner(ui: &mut egui::Ui, id: egui::Id, iso: &mut String) {
     let (mut seen, mut text) = ui
         .data_mut(|d| d.get_temp::<(String, String)>(id))
         .unwrap_or_else(|| (iso.clone(), format_de(iso)));
@@ -198,7 +206,8 @@ pub fn date_edit(ui: &mut egui::Ui, salt: impl std::hash::Hash, iso: &mut String
     ui.data_mut(|d| d.insert_temp(id, (seen, text)));
 
     let cal_id = id.with("calendar");
-    let menu = ui.menu_button("📆", |ui| calendar_menu(ui, cal_id, iso));
+    let calendar = icons::image(icons::Icon::Calendar, 16.0, theme::p().text_soft);
+    let menu = ui.menu_image_button(calendar, |ui| calendar_menu(ui, cal_id, iso));
     if menu.inner.is_none() {
         // geschlossen: beim nächsten Öffnen wieder beim gewählten Datum beginnen
         ui.data_mut(|d| d.remove::<(i32, u32)>(cal_id));
@@ -461,14 +470,14 @@ pub fn meter(ui: &mut egui::Ui, width: f32, fraction: f32, fill: Color32, track:
 /// Hauptaktion (gefüllt im Akzent).
 pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let label = egui::RichText::new(text).family(theme::semibold()).color(Color32::WHITE);
-    ui.add(egui::Button::new(label).fill(theme::p().accent).stroke(egui::Stroke::NONE))
+    ui.add(egui::Button::new(label).fill(theme::p().accent).stroke(egui::Stroke::NONE).wrap_mode(egui::TextWrapMode::Extend))
 }
 
 /// Weiche Aktion (hellblau), z. B. „Einplanen“.
 pub fn soft_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let c = theme::p();
     let label = egui::RichText::new(text).family(theme::semibold()).color(c.accent_text);
-    ui.add(egui::Button::new(label).fill(c.info_bg).stroke(egui::Stroke::new(1.0_f32, c.info_line)))
+    ui.add(egui::Button::new(label).fill(c.info_bg).stroke(egui::Stroke::new(1.0_f32, c.info_line)).wrap_mode(egui::TextWrapMode::Extend))
 }
 
 /// Kleiner Knopf nur mit Symbol; der Tooltip sagt, was er tut.
@@ -488,7 +497,7 @@ pub fn icon_button(ui: &mut egui::Ui, icon: icons::Icon, hint: &str, color: Opti
 
 /// Löschen und andere Aktionen mit Folgen: normaler Knopf mit roter Schrift.
 pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(egui::Button::new(egui::RichText::new(text).color(theme::p().critical_text)))
+    ui.add(egui::Button::new(egui::RichText::new(text).color(theme::p().critical_text)).wrap_mode(egui::TextWrapMode::Extend))
 }
 
 /// Eintrag einer Auswahlliste (links auf Listen-/Detailseiten): Titel, rechts ein Wert, darunter Details und ein Chip.
@@ -558,6 +567,19 @@ pub fn list_entry(ui: &mut egui::Ui, id_salt: impl std::hash::Hash, selected: bo
     ui.interact(inner.response.rect, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// Zwei Bereiche nebeneinander, wenn mindestens `min_width` Platz ist, sonst untereinander.
+pub fn two_up(ui: &mut egui::Ui, min_width: f32, left: impl FnOnce(&mut egui::Ui), right: impl FnOnce(&mut egui::Ui)) {
+    if ui.available_width() >= min_width {
+        ui.columns(2, |cols| {
+            left(&mut cols[0]);
+            right(&mut cols[1]);
+        });
+    } else {
+        left(ui);
+        right(ui);
+    }
+}
+
 /// Linke Listenspalte einer Listen-/Detailseite: eigene Breite, scrollt für sich.
 pub fn list_panel(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     let frame = egui::Frame::new().fill(theme::p().page).inner_margin(egui::Margin { left: 0, right: 14, top: 0, bottom: 0 });
@@ -566,6 +588,37 @@ pub fn list_panel(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) 
         .width_range(240.0..=460.0)
         .frame(frame)
         .show_inside(ui, add);
+}
+
+/// Kopf und Auswahlliste einer Stammdaten-Seite: „Neu“ oben rechts, links die Einträge als Karten
+/// (`rows`: ID, Titel, Zusatzzeile).
+pub fn master_list(
+    ui: &mut egui::Ui,
+    (title, subtitle, new_label): (&str, &str, &str),
+    id: &str,
+    rows: &[(i64, String, String)],
+    selected: i64,
+    act: &mut Action,
+) {
+    page_header(ui, title, subtitle, |ui| {
+        if primary_button(ui, new_label).clicked() {
+            *act = Action::New;
+        }
+    });
+    list_panel(ui, id, |ui| {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if rows.is_empty() {
+                hint(ui, "Noch keine Einträge – lege oben rechts den ersten an.");
+            }
+            for (row_id, title, meta) in rows {
+                let mut entry = ListEntry::new(title);
+                entry.meta = meta;
+                if list_entry(ui, (id, *row_id), selected == *row_id, &entry).clicked() {
+                    *act = Action::Select(*row_id);
+                }
+            }
+        });
+    });
 }
 
 /// Rechter Detailbereich einer Listen-/Detailseite (scrollt).

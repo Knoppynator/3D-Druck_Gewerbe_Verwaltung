@@ -162,6 +162,12 @@ pub fn paint(painter: &egui::Painter, icon: Icon, rect: egui::Rect, color: Color
     }
 }
 
+/// Symbol als `egui::Image` (z. B. für Knöpfe), eingefärbt mit `color`.
+pub fn image(icon: Icon, size: f32, color: Color32) -> egui::Image<'static> {
+    let id = texture(icon).unwrap_or_default();
+    egui::Image::new((id, egui::vec2(size, size))).tint(color)
+}
+
 /// Symbol als eigenes Widget (`size` in Punkten).
 pub fn show(ui: &mut egui::Ui, icon: Icon, size: f32, color: Color32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());

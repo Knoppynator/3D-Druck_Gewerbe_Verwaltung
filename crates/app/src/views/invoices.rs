@@ -8,7 +8,21 @@ use druckplaner_core::{
 };
 use eframe::egui;
 
-use crate::widgets;
+use crate::{
+    icons, theme,
+    widgets::{self, Tone},
+};
+
+/// Status-Chip einer Rechnung; offene nach Fälligkeit als überfällig.
+fn state_chip(r: &InvoiceRow, today: &str) -> (Tone, &'static str) {
+    match r.state {
+        InvoiceState::Open if r.due_at.as_str() < today => (Tone::Critical, "überfällig"),
+        InvoiceState::Open => (Tone::Warn, "offen"),
+        InvoiceState::Paid => (Tone::Good, "bezahlt"),
+        InvoiceState::Cancelled => (Tone::Neutral, "storniert"),
+        InvoiceState::Storno => (Tone::Neutral, "Stornobeleg"),
+    }
+}
 
 enum Act {
     None,
@@ -63,42 +77,52 @@ impl Invoices {
     pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
         let mut act = Act::None;
 
-        egui::SidePanel::left("invoices_list").default_width(300.0).show_inside(ui, |ui| {
-            ui.checkbox(&mut self.only_open, "Nur offene");
-            ui.separator();
+        let open: Vec<&InvoiceRow> = self.rows.iter().filter(|r| r.state == InvoiceState::Open).collect();
+        let overdue = open.iter().filter(|r| r.due_at < self.today).count();
+        let owed: i64 = open.iter().map(|r| r.open_cents()).sum();
+        let subtitle = format!("{} offen ({}) · {overdue} überfällig · neue Rechnungen entstehen bei den Lieferungen", open.len(), format_eur(owed));
+        widgets::page_header(ui, "Rechnungen", &subtitle, |_| {});
+
+        widgets::list_panel(ui, "invoices_list", |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(self.only_open, "Offen").clicked() {
+                    self.only_open = true;
+                }
+                if ui.selectable_label(!self.only_open, "Alle").clicked() {
+                    self.only_open = false;
+                }
+            });
+            ui.add_space(4.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for r in &self.rows {
                     if self.only_open && r.state != InvoiceState::Open {
                         continue;
                     }
-                    let overdue = r.state == InvoiceState::Open && r.due_at < self.today;
-                    let state = if overdue { "überfällig" } else { r.state.label() };
-                    let text = format!(
-                        "{} · {}\n{} · {} · {}",
-                        r.number,
-                        r.customer,
-                        format_de(&r.issued_at),
-                        format_eur(r.total_cents),
-                        state
-                    );
+                    let title = format!("{} · {}", r.number, r.customer);
+                    let total = format_eur(r.total_cents);
+                    let meta = format!("vom {} · fällig {}", format_de(&r.issued_at), format_de(&r.due_at));
+                    let mut entry = widgets::ListEntry::new(&title);
+                    entry.right = &total;
+                    entry.meta = &meta;
+                    entry.chip = Some(state_chip(r, &self.today));
                     let selected = self.selected.as_ref().is_some_and(|s| s.id == r.id);
-                    if ui.selectable_label(selected, text).clicked() {
+                    if widgets::list_entry(ui, ("invoice", r.id), selected, &entry).clicked() {
                         act = Act::Select(r.id);
                     }
                 }
             });
         });
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.detail_ui(ui, &mut act));
-        });
+        widgets::detail_panel(ui, |ui| self.detail_ui(ui, &mut act));
 
         self.handle(act, db, status);
     }
 
     fn detail_ui(&mut self, ui: &mut egui::Ui, act: &mut Act) {
         let Some(inv) = &self.selected else {
-            ui.label("Rechnung links auswählen. Neue Rechnungen entstehen bei den Lieferungen einer Bestellung.");
+            widgets::card(ui, "Keine Rechnung gewählt", "", |ui| {
+                widgets::hint(ui, "Rechnung links auswählen. Neue Rechnungen entstehen bei den Lieferungen einer Bestellung.");
+            });
             return;
         };
         let row = self.rows.iter().find(|r| r.id == inv.id);
@@ -112,20 +136,46 @@ impl Invoices {
         let s = &self.sender;
         let title = if storno_of.is_some() { "Stornorechnung" } else { "Rechnung" };
 
-        ui.heading(format!("{title} {}", inv.number));
-        if let Some(r) = row {
-            ui.label(format!(
-                "Status: {} · bezahlt {} · offen {}",
-                r.state.label(),
-                format_eur(r.paid_cents),
-                format_eur(r.open_cents())
-            ));
-        }
-        ui.add_space(6.0);
+        // Kopfkarte mit Status und Aktionen
+        widgets::card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    widgets::hint(ui, &format!("{} · vom {}", inv.recipient.lines().next().unwrap_or(""), format_de(&inv.issued_at)));
+                    ui.horizontal(|ui| {
+                        ui.label(theme::strong(format!("{title} {}", inv.number), 20.0));
+                        if let Some(r) = row {
+                            let (tone, label) = state_chip(r, &self.today);
+                            widgets::chip(ui, tone, label);
+                        }
+                    });
+                    if let Some(r) = row {
+                        ui.label(
+                            egui::RichText::new(format!("Betrag {} · bezahlt {} · offen {}", format_eur(r.total_cents), format_eur(r.paid_cents), format_eur(r.open_cents())))
+                                .color(theme::p().text_soft),
+                        );
+                    }
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::primary_button(ui, "PDF öffnen").clicked() {
+                        *act = Act::OpenPdf;
+                    }
+                    if ui.button("PDF neu erzeugen").on_hover_text("Nutzt die aktuelle Vorlage und die aktuellen Absenderdaten").clicked() {
+                        *act = Act::Regenerate;
+                    }
+                    if state == Some(InvoiceState::Open) && self.payments.is_empty() && widgets::danger_button(ui, "Stornieren").clicked() {
+                        *act = Act::Cancel;
+                    }
+                });
+            });
+        });
+        ui.add_space(4.0);
 
         // Vorschau der Beleg-Inhalte (nicht das PDF-Layout)
         widgets::card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
+            widgets::card_title(ui, "Vorschau", "Inhalt der Rechnung, nicht das PDF-Layout", |_| {});
             ui.columns(2, |cols| {
                 for line in inv.recipient.lines() {
                     cols[0].label(line);
@@ -195,51 +245,46 @@ impl Invoices {
             }
         });
 
+        ui.add_space(4.0);
         if inv.lines.iter().any(|l| l.kind == "legacy") {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label("Stückzahl dieser Altrechnung (fürs Dashboard)");
-                ui.add(egui::DragValue::new(&mut self.units_edit).range(0..=100_000).suffix(" Stk."));
-                if ui.button("Speichern").clicked() {
-                    *act = Act::SetUnits;
-                }
+            widgets::card(ui, "Altrechnung", "Stückzahl fürs Dashboard nachtragen", |ui| {
+                ui.horizontal(|ui| {
+                    widgets::form_label(ui, "Stückzahl");
+                    ui.add(egui::DragValue::new(&mut self.units_edit).range(0..=100_000).suffix(" Stk."));
+                    if widgets::soft_button(ui, "Speichern").clicked() {
+                        *act = Act::SetUnits;
+                    }
+                });
             });
         }
 
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.button("PDF öffnen").clicked() {
-                *act = Act::OpenPdf;
-            }
-            if ui.button("PDF neu erzeugen").on_hover_text("Nutzt die aktuelle Vorlage und die aktuellen Absenderdaten").clicked() {
-                *act = Act::Regenerate;
-            }
-            if state == Some(InvoiceState::Open) && self.payments.is_empty() && ui.button("Stornieren").clicked() {
-                *act = Act::Cancel;
-            }
-        });
-
         if matches!(state, Some(InvoiceState::Open) | Some(InvoiceState::Paid)) {
-            ui.add_space(16.0);
-            ui.separator();
-            ui.heading("Zahlungen");
-            for p in &self.payments {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} · {}", format_de(&p.paid_at), format_eur(p.amount_cents)));
-                    if !p.note.is_empty() {
-                        ui.weak(p.note.as_str());
-                    }
-                    if ui.small_button("×").on_hover_text("Zahlung entfernen").clicked() {
-                        *act = Act::DeletePayment(p.id);
-                    }
-                });
-            }
-            ui.horizontal(|ui| {
-                widgets::date_edit(ui, "pay_date", &mut self.new_payment.paid_at);
-                widgets::eur_edit(ui, &mut self.new_payment.amount_cents);
-                ui.add(egui::TextEdit::singleline(&mut self.new_payment.note).desired_width(160.0).hint_text("Notiz"));
-                if ui.button("Zahlung erfassen").clicked() {
-                    *act = Act::AddPayment;
+            widgets::card(ui, "Zahlungen", "", |ui| {
+                if self.payments.is_empty() {
+                    widgets::hint(ui, "Noch keine Zahlung erfasst.");
+                }
+                for p in &self.payments {
+                    ui.horizontal(|ui| {
+                        icons::show(ui, icons::Icon::Check, 14.0, theme::p().good_text);
+                        ui.label(format!("{} · {}", format_de(&p.paid_at), format_eur(p.amount_cents)));
+                        if !p.note.is_empty() {
+                            widgets::hint(ui, p.note.as_str());
+                        }
+                        if ui.small_button("×").on_hover_text("Zahlung entfernen").clicked() {
+                            *act = Act::DeletePayment(p.id);
+                        }
+                    });
+                }
+                if state == Some(InvoiceState::Open) {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        widgets::date_edit(ui, "pay_date", &mut self.new_payment.paid_at);
+                        widgets::eur_edit(ui, &mut self.new_payment.amount_cents);
+                        ui.add(egui::TextEdit::singleline(&mut self.new_payment.note).desired_width(160.0).hint_text("Notiz"));
+                        if widgets::primary_button(ui, "Zahlung erfassen").clicked() {
+                            *act = Act::AddPayment;
+                        }
+                    });
                 }
             });
         }

@@ -1,4 +1,5 @@
 use druckplaner_core::{
+    money::format_eur,
     catalog::{BomItem, BomLine, LeadTier, PriceTier, PrintPart, Product, PurchasePart, Surcharge},
     Db,
 };
@@ -48,38 +49,35 @@ impl Products {
     pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
         let mut act = Action::None;
 
-        egui::SidePanel::left("products_list").default_width(240.0).show_inside(ui, |ui| {
-            if ui.button("Neues Produkt").clicked() {
-                act = Action::New;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for p in &self.items {
-                    if ui.selectable_label(self.form.id == p.id, p.name.as_str()).clicked() {
-                        act = Action::Select(p.id);
-                    }
-                }
-            });
-        });
+        let rows: Vec<(i64, String, String)> = self
+            .items
+            .iter()
+            .map(|p| {
+                let from = p.tiers.iter().map(|t| t.unit_price_cents).min().map_or(String::new(), |c| format!("ab {} · ", format_eur(c)));
+                (p.id, p.name.clone(), format!("{from}{} Stücklisten-Position(en)", p.bom.len()))
+            })
+            .collect();
+        let subtitle = format!("{} Produkt(e) – Stückliste, Staffelpreise, Lieferzeit und Aufpreise", self.items.len());
+        widgets::master_list(ui, ("Produkte", &subtitle, "Neues Produkt"), "products_list", &rows, self.form.id, &mut act);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading(if self.form.id == 0 { "Neues Produkt" } else { "Produkt bearbeiten" });
-                ui.add_space(8.0);
-                egui::Grid::new("product_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        widgets::detail_panel(ui, |ui| {
+            widgets::card_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                widgets::card_title(ui, if self.form.id == 0 { "Neues Produkt" } else { "Produkt bearbeiten" }, "", |_| {});
+                egui::Grid::new("product_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                     widgets::text_row(ui, "Name", &mut self.form.name);
                     widgets::int_row(ui, "Arbeitszeit je Stück", &mut self.form.labor_minutes, " min");
-                    ui.label("Staffeln zählen");
+                    widgets::form_label(ui, "Staffeln zählen");
                     ui.checkbox(&mut self.form.tier_per_color, "Menge je Farbe (sonst Gesamtmenge des Produkts)")
                         .on_hover_text("Gilt für Staffelpreise und Lieferzeit-Staffel: 6× schwarz + 6× weiß ergibt dann zweimal Stufe „ab 5“, nicht einmal „ab 10“");
                     ui.end_row();
                 });
 
                 // Stückliste
-                ui.add_space(12.0);
-                ui.strong("Stückliste (je 1 Stück)");
+                ui.separator();
+                widgets::sub_heading(ui, "Stückliste (je 1 Stück)");
                 if self.print_parts.is_empty() && self.purchase_parts.is_empty() {
-                    ui.label("Lege zuerst Druckteile und Zukaufteile an.");
+                    widgets::hint(ui, "Lege zuerst Druckteile und Zukaufteile an.");
                 }
                 let mut remove = None;
                 for (i, line) in self.form.bom.iter_mut().enumerate() {
@@ -124,8 +122,8 @@ impl Products {
                 }
 
                 // Staffelpreise
-                ui.add_space(12.0);
-                ui.strong(if self.form.tier_per_color {
+                ui.separator();
+                widgets::sub_heading(ui, if self.form.tier_per_color {
                     "Staffelpreise (Stückpreis ab Menge je Farbe in einer Bestellung)"
                 } else {
                     "Staffelpreise (Stückpreis ab Gesamtmenge je Bestellung)"
@@ -150,8 +148,8 @@ impl Products {
                 }
 
                 // Standard-Lieferzeit
-                ui.add_space(12.0);
-                ui.strong("Standard-Lieferzeit (Vorschlag für den Wunschtermin, ab Menge)");
+                ui.separator();
+                widgets::sub_heading(ui, "Standard-Lieferzeit (Vorschlag für den Wunschtermin, ab Menge)");
                 let mut remove = None;
                 for (i, t) in self.form.lead_tiers.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
@@ -171,11 +169,11 @@ impl Products {
                     let days = self.form.lead_tiers.last().map_or(14, |t| t.days);
                     self.form.lead_tiers.push(LeadTier { min_qty: next, days });
                 }
-                ui.weak("Ohne Eintrag gilt die Standard-Lieferzeit aus den Einstellungen.");
+                widgets::hint(ui, "Ohne Eintrag gilt die Standard-Lieferzeit aus den Einstellungen.");
 
                 // Aufpreise je Werkstoff
-                ui.add_space(12.0);
-                ui.strong("Aufpreis je Werkstoff (pro Stück)");
+                ui.separator();
+                widgets::sub_heading(ui, "Aufpreis je Werkstoff (pro Stück)");
                 let mut remove = None;
                 for (i, s) in self.form.surcharges.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
@@ -202,7 +200,7 @@ impl Products {
                     }
                 }
 
-                ui.add_space(12.0);
+                ui.separator();
                 widgets::form_buttons(ui, self.form.id != 0, &mut act);
             });
         });

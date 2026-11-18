@@ -19,34 +19,29 @@ impl Customers {
     pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
         let mut act = Action::None;
 
-        egui::SidePanel::left("customers_list").default_width(240.0).show_inside(ui, |ui| {
-            if ui.button("Neuer Kunde").clicked() {
-                act = Action::New;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for c in &self.items {
-                    if ui.selectable_label(self.form.id == c.id, c.company.as_str()).clicked() {
-                        act = Action::Select(c.id);
-                    }
-                }
-            });
-        });
+        let rows: Vec<(i64, String, String)> = self
+            .items
+            .iter()
+            .map(|c| (c.id, c.company.clone(), [c.contact.as_str(), c.city.as_str()].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · ")))
+            .collect();
+        let subtitle = format!("{} Kunde(n) · Anschrift und Anrede erscheinen auf den Rechnungen", self.items.len());
+        widgets::master_list(ui, ("Kunden", &subtitle, "Neuer Kunde"), "customers_list", &rows, self.form.id, &mut act);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.heading(if self.form.id == 0 { "Neuer Kunde" } else { "Kunde bearbeiten" });
-            ui.add_space(8.0);
-            egui::Grid::new("customer_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                widgets::text_row(ui, "Firma / Name", &mut self.form.company);
-                widgets::text_row(ui, "Ansprechpartner", &mut self.form.contact);
-                widgets::text_row(ui, "Anrede (Brief)", &mut self.form.salutation);
-                widgets::text_row(ui, "Straße, Hausnr.", &mut self.form.street);
-                widgets::text_row(ui, "PLZ", &mut self.form.zip);
-                widgets::text_row(ui, "Ort", &mut self.form.city);
-                widgets::text_row(ui, "Notiz", &mut self.form.note);
+        widgets::detail_panel(ui, |ui| {
+            let title = if self.form.id == 0 { "Neuer Kunde" } else { "Kunde bearbeiten" };
+            widgets::card(ui, title, "", |ui| {
+                egui::Grid::new("customer_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    widgets::text_row(ui, "Firma / Name", &mut self.form.company);
+                    widgets::text_row(ui, "Ansprechpartner", &mut self.form.contact);
+                    widgets::text_row(ui, "Anrede (Brief)", &mut self.form.salutation);
+                    widgets::text_row(ui, "Straße, Hausnr.", &mut self.form.street);
+                    widgets::text_row(ui, "PLZ", &mut self.form.zip);
+                    widgets::text_row(ui, "Ort", &mut self.form.city);
+                    widgets::text_row(ui, "Notiz", &mut self.form.note);
+                });
+                ui.add_space(8.0);
+                widgets::form_buttons(ui, self.form.id != 0, &mut act);
             });
-            ui.add_space(8.0);
-            widgets::form_buttons(ui, self.form.id != 0, &mut act);
         });
 
         match act {

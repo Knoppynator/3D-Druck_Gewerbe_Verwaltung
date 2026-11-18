@@ -22,31 +22,26 @@ impl PrintParts {
     pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
         let mut act = Action::None;
 
-        egui::SidePanel::left("print_parts_list").default_width(240.0).show_inside(ui, |ui| {
-            if ui.button("Neues Druckteil").clicked() {
-                act = Action::New;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for p in &self.items {
-                    if ui.selectable_label(self.form.id == p.id, p.name.as_str()).clicked() {
-                        act = Action::Select(p.id);
-                    }
-                }
-            });
-        });
+        let rows: Vec<(i64, String, String)> = self
+            .items
+            .iter()
+            .map(|p| (p.id, p.name.clone(), p.notes.lines().next().unwrap_or("").to_string()))
+            .collect();
+        let subtitle = format!("{} Teil(e) – was auf den Platten gedruckt wird", self.items.len());
+        widgets::master_list(ui, ("Druckteile", &subtitle, "Neues Druckteil"), "print_parts_list", &rows, self.form.id, &mut act);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.heading(if self.form.id == 0 { "Neues Druckteil" } else { "Druckteil bearbeiten" });
-            ui.add_space(8.0);
-            egui::Grid::new("print_part_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                widgets::text_row(ui, "Name", &mut self.form.name);
-                ui.label("Druckhinweise");
-                ui.add(egui::TextEdit::multiline(&mut self.form.notes).desired_width(320.0).desired_rows(4));
-                ui.end_row();
+        widgets::detail_panel(ui, |ui| {
+            let title = if self.form.id == 0 { "Neues Druckteil" } else { "Druckteil bearbeiten" };
+            widgets::card(ui, title, "", |ui| {
+                egui::Grid::new("print_part_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    widgets::text_row(ui, "Name", &mut self.form.name);
+                    widgets::form_label(ui, "Druckhinweise");
+                    ui.add(egui::TextEdit::multiline(&mut self.form.notes).desired_width(320.0).desired_rows(4));
+                    ui.end_row();
+                });
+                ui.add_space(8.0);
+                widgets::form_buttons(ui, self.form.id != 0, &mut act);
             });
-            ui.add_space(8.0);
-            widgets::form_buttons(ui, self.form.id != 0, &mut act);
         });
 
         match act {
@@ -88,39 +83,37 @@ impl PurchaseParts {
     pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
         let mut act = Action::None;
 
-        egui::SidePanel::left("purchase_parts_list").default_width(240.0).show_inside(ui, |ui| {
-            if ui.button("Neues Zukaufteil").clicked() {
-                act = Action::New;
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for p in &self.items {
-                    if ui.selectable_label(self.form.id == p.id, p.name.as_str()).clicked() {
-                        act = Action::Select(p.id);
-                    }
-                }
-            });
-        });
+        let rows: Vec<(i64, String, String)> = self
+            .items
+            .iter()
+            .map(|p| {
+                let sale = if p.sellable { " · verkaufbar" } else { "" };
+                (p.id, p.name.clone(), format!("{} € je {}{sale}", widgets::dec(p.unit_cost_eur, 3), p.unit))
+            })
+            .collect();
+        let subtitle = format!("{} Teil(e) – Schrauben, Saugnäpfe und alles, was eingekauft wird", self.items.len());
+        widgets::master_list(ui, ("Zukaufteile", &subtitle, "Neues Zukaufteil"), "purchase_parts_list", &rows, self.form.id, &mut act);
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            ui.heading(if self.form.id == 0 { "Neues Zukaufteil" } else { "Zukaufteil bearbeiten" });
-            ui.add_space(8.0);
-            egui::Grid::new("purchase_part_form").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                widgets::text_row(ui, "Name", &mut self.form.name);
-                widgets::text_row(ui, "Einheit", &mut self.form.unit);
-                ui.label("Einkaufspreis je Einheit");
-                widgets::dec_drag(ui, &mut self.form.unit_cost_eur, 0.0..=100_000.0, 0.001, 3, " €");
-                ui.end_row();
-                widgets::int_row(ui, "Mindestbestand", &mut self.form.min_stock, "");
-                ui.label("Einzeln verkaufbar");
-                ui.checkbox(&mut self.form.sellable, "");
-                ui.end_row();
-                if self.form.sellable {
-                    widgets::eur_row(ui, "Verkaufspreis je Einheit", &mut self.form.sale_price_cents);
-                }
+        widgets::detail_panel(ui, |ui| {
+            let title = if self.form.id == 0 { "Neues Zukaufteil" } else { "Zukaufteil bearbeiten" };
+            widgets::card(ui, title, "", |ui| {
+                egui::Grid::new("purchase_part_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    widgets::text_row(ui, "Name", &mut self.form.name);
+                    widgets::text_row(ui, "Einheit", &mut self.form.unit);
+                    widgets::form_label(ui, "Einkaufspreis je Einheit");
+                    widgets::dec_drag(ui, &mut self.form.unit_cost_eur, 0.0..=100_000.0, 0.001, 3, " €");
+                    ui.end_row();
+                    widgets::int_row(ui, "Mindestbestand", &mut self.form.min_stock, "");
+                    widgets::form_label(ui, "Einzeln verkaufbar");
+                    ui.checkbox(&mut self.form.sellable, "");
+                    ui.end_row();
+                    if self.form.sellable {
+                        widgets::eur_row(ui, "Verkaufspreis je Einheit", &mut self.form.sale_price_cents);
+                    }
+                });
+                ui.add_space(8.0);
+                widgets::form_buttons(ui, self.form.id != 0, &mut act);
             });
-            ui.add_space(8.0);
-            widgets::form_buttons(ui, self.form.id != 0, &mut act);
         });
 
         match act {
