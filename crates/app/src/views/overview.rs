@@ -9,7 +9,7 @@ use druckplaner_core::{
 };
 use eframe::egui;
 
-use crate::widgets;
+use crate::{theme, widgets};
 
 /// Sprungziel aus der Übersicht in eine andere Seite.
 pub enum Nav {
@@ -46,21 +46,23 @@ fn board_card(
     nav: &mut Option<Nav>,
     mv: &mut Option<(i64, BoardColumn)>,
 ) {
-    egui::Frame::group(ui.style()).show(ui, |ui| {
+    widgets::card_frame().inner_margin(10).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.dnd_drag_source(egui::Id::new(("board_card", s.id)), s.id, |ui| {
             ui.set_width(ui.available_width());
             ui.add(egui::Label::new(egui::RichText::new(&s.customer).strong()).truncate());
             ui.label(format!("{} Stk. · {}", s.ordered_qty, format_eur(s.total_cents)));
             let marker = match s.status() {
-                OrderStatus::Packed => Some("verpackt".to_string()),
-                OrderStatus::PartlyShipped => Some(format!("teilweise versendet ({}/{})", s.shipped_qty, s.ordered_qty)),
-                OrderStatus::Shipped => Some("versendet – Rechnung fehlt".to_string()),
-                OrderStatus::Invoiced => Some("Zahlung offen".to_string()),
+                OrderStatus::Packed => Some((widgets::Tone::Neutral, "verpackt".to_string())),
+                OrderStatus::PartlyShipped => {
+                    Some((widgets::Tone::Accent, format!("teilweise versendet ({}/{})", s.shipped_qty, s.ordered_qty)))
+                }
+                OrderStatus::Shipped => Some((widgets::Tone::Warn, "Rechnung fehlt".to_string())),
+                OrderStatus::Invoiced => Some((widgets::Tone::Warn, "Zahlung offen".to_string())),
                 _ => None,
             };
-            if let Some(text) = marker {
-                ui.colored_label(ui.visuals().warn_fg_color, text);
+            if let Some((tone, text)) = marker {
+                widgets::chip(ui, tone, &text);
             }
             ui.weak(format!("Eingang {}", format_de(&s.received_at)));
             if !s.due_date.is_empty() {
@@ -172,7 +174,7 @@ impl Overview {
                     let col = BoardColumn::ALL[idx];
                     let cards: Vec<&OrderSummary> = board.iter().filter(|s| s.board_column() == Some(col)).collect();
                     ui.strong(format!("{} ({})", col.label(), cards.len()));
-                    let frame = egui::Frame::group(ui.style());
+                    let frame = egui::Frame::new().fill(theme::LINE_SOFT).corner_radius(12).inner_margin(8);
                     let (_, dropped) = ui.dnd_drop_zone::<i64, ()>(frame, |ui| {
                         ui.set_min_size(egui::vec2(ui.available_width(), 110.0));
                         for s in &cards {

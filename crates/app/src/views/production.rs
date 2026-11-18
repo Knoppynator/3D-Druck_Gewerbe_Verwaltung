@@ -78,18 +78,16 @@ impl Production {
         let warn = ui.visuals().warn_fg_color;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Produktion");
             let queued = self.schedule.jobs.len();
-            if queued == 0 {
-                ui.label("Die Warteschlange ist leer.");
+            let subtitle = if queued == 0 {
+                "Die Warteschlange ist leer".to_string()
             } else {
-                ui.label(format!("{queued} Job(s) in der Warteschlange · voraussichtlich fertig {}", format_datetime_de(&self.schedule.ends_at)));
-            }
+                format!("{queued} Job(s) in der Warteschlange · voraussichtlich fertig {}", format_datetime_de(&self.schedule.ends_at))
+            };
+            widgets::page_header(ui, "Produktion", &subtitle, |_| {});
             for f in self.schedule.filament.iter().filter(|f| f.need_g > f.stock_g) {
-                ui.colored_label(
-                    error,
-                    format!("Filament {}: Warteschlange braucht {} g, im Lager {} g – nachbestellen", f.material_label, f.need_g, f.stock_g),
-                );
+                let text = format!("{} – die Warteschlange braucht {} g, im Lager sind {} g.", f.material_label, f.need_g, f.stock_g);
+                widgets::alert(ui, widgets::Tone::Critical, "Filament fehlt:", &text, None);
             }
 
             // ---- Bedarf
@@ -241,7 +239,11 @@ impl Production {
                         ui.label(material);
                         ui.label(format_datetime_de(&j.finished_at));
                         let usable = if j.status == JobStatus::Failed && j.parts_booked > 0 { format!(" · {} Teile brauchbar", j.parts_booked) } else { String::new() };
-                        ui.label(format!("{} · {} g{usable}", j.status.label(), j.used_g));
+                        ui.horizontal(|ui| {
+                            let tone = if j.status == JobStatus::Failed { widgets::Tone::Serious } else { widgets::Tone::Good };
+                            widgets::chip(ui, tone, j.status.label());
+                            ui.label(format!("{} g{usable}", j.used_g));
+                        });
                         if ui.small_button("Zurücknehmen").on_hover_text("Macht die Lagerbuchungen rückgängig").clicked() {
                             act = Act::Reopen(j.id);
                         }

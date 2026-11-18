@@ -1079,6 +1079,7 @@ dependencies = [
  "druckplaner-core",
  "eframe",
  "hayro",
+ "resvg",
  "rfd",
 ]
 

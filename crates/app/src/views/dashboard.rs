@@ -6,7 +6,7 @@ use druckplaner_core::{
 };
 use eframe::egui::{self, Color32};
 
-use crate::widgets;
+use crate::{theme, widgets};
 
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
 
@@ -30,18 +30,34 @@ fn eur(value: f64) -> String {
     format_eur((value * 100.0).round() as i64)
 }
 
-fn tile(ui: &mut egui::Ui, title: &str, value: String, sub: Option<(String, Color32)>) {
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.set_min_width(160.0);
-        ui.vertical(|ui| {
-            ui.weak(title);
-            ui.label(egui::RichText::new(value).size(20.0).strong());
-            match sub {
-                Some((text, color)) => ui.colored_label(color, text),
-                None => ui.label(""),
-            };
-        });
+/// Kennzahl-Kachel: Titel, Wert, Zusatzzeile.
+struct Tile {
+    title: String,
+    value: String,
+    sub: String,
+    sub_color: Color32,
+}
+
+fn tile(ui: &mut egui::Ui, t: &Tile) {
+    widgets::card_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.label(egui::RichText::new(&t.title).color(theme::TEXT_SOFT));
+        ui.label(theme::strong(&t.value, 22.0));
+        ui.add(egui::Label::new(egui::RichText::new(&t.sub).size(12.0).color(t.sub_color)).truncate());
     });
+}
+
+/// Verteilt die Kacheln auf so viele Spalten, wie mit mindestens 200 px Breite nebeneinander passen.
+fn tile_rows(ui: &mut egui::Ui, tiles: &[Tile]) {
+    let per_row = (((ui.available_width() + 12.0) / 212.0).floor() as usize).clamp(1, tiles.len().max(1));
+    for row in tiles.chunks(per_row) {
+        ui.columns(per_row, |cols| {
+            for (col, t) in cols.iter_mut().zip(row) {
+                tile(col, t);
+            }
+        });
+    }
 }
 
 /// Einfaches Säulendiagramm; der letzte (laufende) Monat ist blasser, weil er noch nicht vollständig ist.
@@ -111,46 +127,43 @@ impl DashboardView {
         let p = &self.projection;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Dashboard");
-            ui.add_space(6.0);
+            widgets::page_header(ui, "Dashboard", &format!("Geschäftsjahr {}", t.year), |_| {});
 
-            ui.horizontal_wrapped(|ui| {
-                tile(ui, &format!("Umsatz {}", t.year), format_eur(t.revenue_cents), Some(("nach Rechnungsdatum".into(), ui.visuals().weak_text_color())));
-                tile(
-                    ui,
-                    &format!("Gewinn {} (EÜR)", t.year),
-                    format_eur(t.profit_cents),
-                    Some((format!("{} ein − {} aus", format_eur(t.income_cents), format_eur(t.expenses_cents)), ui.visuals().weak_text_color())),
-                );
-                tile(
-                    ui,
-                    "Offene Forderungen",
-                    format_eur(t.receivables_cents),
-                    Some(if t.overdue_cents > 0 {
-                        (format!("{} überfällig", format_eur(t.overdue_cents)), error)
-                    } else {
-                        ("nichts überfällig".into(), ui.visuals().weak_text_color())
-                    }),
-                );
-                tile(
-                    ui,
-                    "Offene Bestellungen",
-                    format!("{} Stk.", t.open_units),
-                    Some((format!("{} Bestellung(en)", t.open_orders), ui.visuals().weak_text_color())),
-                );
-                tile(
-                    ui,
-                    "Druck-Warteschlange",
-                    if t.queue_ends_at.is_empty() { "leer".to_string() } else { druckplaner_core::date::format_datetime_de(&t.queue_ends_at) },
-                    Some(("voraussichtlich fertig".into(), ui.visuals().weak_text_color())),
-                );
-                tile(
-                    ui,
-                    "Nachbestellen",
-                    t.low_stock.to_string(),
-                    Some(if t.low_stock > 0 { ("Posten unter Mindestbestand/knapp".into(), warn) } else { ("alles im Soll".into(), ui.visuals().weak_text_color()) }),
-                );
-            });
+            let soft = theme::MUTED;
+            let tiles = [
+                Tile { title: format!("Umsatz {}", t.year), value: format_eur(t.revenue_cents), sub: "nach Rechnungsdatum".into(), sub_color: soft },
+                Tile {
+                    title: format!("Gewinn {} (EÜR)", t.year),
+                    value: format_eur(t.profit_cents),
+                    sub: format!("{} ein − {} aus", format_eur(t.income_cents), format_eur(t.expenses_cents)),
+                    sub_color: soft,
+                },
+                Tile {
+                    title: "Offene Forderungen".into(),
+                    value: format_eur(t.receivables_cents),
+                    sub: if t.overdue_cents > 0 { format!("{} überfällig", format_eur(t.overdue_cents)) } else { "nichts überfällig".into() },
+                    sub_color: if t.overdue_cents > 0 { error } else { soft },
+                },
+                Tile {
+                    title: "Offene Bestellungen".into(),
+                    value: format!("{} Stk.", t.open_units),
+                    sub: format!("{} Bestellung(en)", t.open_orders),
+                    sub_color: soft,
+                },
+                Tile {
+                    title: "Druck-Warteschlange".into(),
+                    value: if t.queue_ends_at.is_empty() { "leer".to_string() } else { druckplaner_core::date::format_datetime_de(&t.queue_ends_at) },
+                    sub: "voraussichtlich fertig".into(),
+                    sub_color: soft,
+                },
+                Tile {
+                    title: "Nachbestellen".into(),
+                    value: t.low_stock.to_string(),
+                    sub: if t.low_stock > 0 { "Posten unter Mindestbestand/knapp".into() } else { "alles im Soll".into() },
+                    sub_color: if t.low_stock > 0 { warn } else { soft },
+                },
+            ];
+            tile_rows(ui, &tiles);
 
             // ---- Umsatz und Absatz
             ui.add_space(14.0);

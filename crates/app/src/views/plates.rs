@@ -259,7 +259,7 @@ impl Plates {
     fn import_ui(&mut self, ui: &mut egui::Ui, extra: &mut Extra) {
         let Some(import) = &mut self.import else { return };
         ui.add_space(6.0);
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        widgets::card_frame().show(ui, |ui| {
             let file = import.file.file_name().and_then(|n| n.to_str()).unwrap_or("");
             ui.strong(format!("Datei: {file}"));
             if import.plates.len() > 1 {

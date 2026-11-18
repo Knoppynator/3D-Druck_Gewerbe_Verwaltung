@@ -124,7 +124,7 @@ impl Invoices {
         ui.add_space(6.0);
 
         // Vorschau der Beleg-Inhalte (nicht das PDF-Layout)
-        egui::Frame::group(ui.style()).inner_margin(12.0).show(ui, |ui| {
+        widgets::card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.columns(2, |cols| {
                 for line in inv.recipient.lines() {

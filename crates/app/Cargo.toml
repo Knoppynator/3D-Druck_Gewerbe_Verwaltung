@@ -8,3 +8,4 @@ druckplaner-core = { path = "../core" }
 eframe = "0.32"
 rfd = "0.17"
 hayro = "0.7"
+resvg = { version = "0.47", default-features = false }
