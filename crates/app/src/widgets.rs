@@ -33,14 +33,19 @@ pub fn report<T>(status: &mut String, result: druckplaner_core::Result<T>, ok: &
     }
 }
 
+/// Beschriftung links in einem Formular-Raster (leiser als der Inhalt).
+pub fn form_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).color(theme::p().text_soft));
+}
+
 pub fn text_row(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    ui.label(label);
+    form_label(ui, label);
     ui.add(egui::TextEdit::singleline(value).desired_width(320.0));
     ui.end_row();
 }
 
 pub fn int_row(ui: &mut egui::Ui, label: &str, value: &mut i64, suffix: &str) {
-    ui.label(label);
+    form_label(ui, label);
     ui.add(egui::DragValue::new(value).range(0..=1_000_000).suffix(suffix));
     ui.end_row();
 }
@@ -77,7 +82,7 @@ pub fn eur_edit(ui: &mut egui::Ui, cents: &mut i64) {
 }
 
 pub fn eur_row(ui: &mut egui::Ui, label: &str, cents: &mut i64) {
-    ui.label(label);
+    form_label(ui, label);
     eur_edit(ui, cents);
     ui.end_row();
 }
@@ -201,7 +206,7 @@ pub fn date_edit(ui: &mut egui::Ui, salt: impl std::hash::Hash, iso: &mut String
 }
 
 pub fn date_row(ui: &mut egui::Ui, label: &str, iso: &mut String) {
-    ui.label(label);
+    form_label(ui, label);
     date_edit(ui, label, iso);
     ui.end_row();
 }
@@ -220,10 +225,10 @@ pub fn open_file(path: &std::path::Path, status: &mut String) {
 /// "Speichern" / "Löschen" unter einem Formular.
 pub fn form_buttons(ui: &mut egui::Ui, can_delete: bool, act: &mut Action) {
     ui.horizontal(|ui| {
-        if ui.button("Speichern").clicked() {
+        if primary_button(ui, "Speichern").clicked() {
             *act = Action::Save;
         }
-        if can_delete && ui.button("Löschen").clicked() {
+        if can_delete && danger_button(ui, "Löschen").clicked() {
             *act = Action::Delete;
         }
     });
@@ -234,28 +239,86 @@ pub fn form_buttons(ui: &mut egui::Ui, can_delete: bool, act: &mut Action) {
 /// Weiße Karte mit feiner Linie – der Rahmen für jeden Bereich einer Seite.
 pub fn card_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(theme::CARD)
-        .stroke(egui::Stroke::new(1.0_f32, theme::LINE))
+        .fill(theme::p().card)
+        .stroke(egui::Stroke::new(1.0_f32, theme::p().line))
         .corner_radius(12)
         .inner_margin(egui::Margin::symmetric(18, 14))
+}
+
+/// Titelzeile einer Karte: Titel links, rechts leiser Hinweis und/oder Aktionen.
+pub fn card_title(ui: &mut egui::Ui, title: &str, hint: &str, actions: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.label(theme::strong(title, 16.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            actions(ui);
+            if !hint.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(hint).size(12.0).color(theme::p().muted)).truncate());
+            }
+        });
+    });
+    ui.add_space(4.0);
+}
+
+/// Karte mit Titel über die volle Breite; `hint` steht rechts im Titel.
+pub fn card<R>(ui: &mut egui::Ui, title: &str, hint: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    card_actions(ui, title, hint, |_| {}, add)
+}
+
+/// Karte mit Titel, Hinweis und Aktionen rechts im Titel.
+pub fn card_actions<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    hint: &str,
+    actions: impl FnOnce(&mut egui::Ui),
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let inner = card_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if !title.is_empty() {
+            card_title(ui, title, hint, actions);
+        }
+        add(ui)
+    });
+    ui.add_space(4.0);
+    inner.inner
 }
 
 /// Seitenkopf: Titel, eine Zeile Kontext und rechts die Hauptaktionen.
 pub fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str, actions: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(theme::strong(title, 24.0));
             if !subtitle.is_empty() {
-                ui.label(egui::RichText::new(subtitle).color(theme::TEXT_SOFT));
+                ui.label(egui::RichText::new(subtitle).color(theme::p().text_soft));
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), actions);
     });
+    ui.add_space(8.0);
+}
+
+/// Kleine Überschrift innerhalb einer Karte (z. B. „Stückliste“).
+pub fn sub_heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
+    ui.label(egui::RichText::new(text).family(theme::semibold()).color(theme::p().text));
+}
+
+/// Leiser Erklärungstext.
+pub fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(12.0).color(theme::p().muted));
+}
+
+/// Kopfzeile einer Tabelle (`egui::Grid`), leise und halbfett.
+pub fn table_head(ui: &mut egui::Ui, headers: &[&str]) {
+    for h in headers {
+        ui.label(egui::RichText::new(*h).size(13.0).family(theme::semibold()).color(theme::p().text_soft));
+    }
+    ui.end_row();
 }
 
 /// Bedeutung einer Status-Anzeige; Farbe nie allein, immer mit Text.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tone {
     Neutral,
     Accent,
@@ -267,14 +330,23 @@ pub enum Tone {
 
 impl Tone {
     /// (Fläche, Text, Punkt)
-    fn colors(self) -> (Color32, Color32, Color32) {
+    pub fn colors(self) -> (Color32, Color32, Color32) {
+        let c = theme::p();
         match self {
-            Tone::Neutral => (Color32::from_rgb(0xf1, 0xf0, 0xeb), theme::NAV_TEXT, Color32::from_rgb(0x9a, 0x99, 0x8f)),
-            Tone::Accent => (theme::ACCENT_SOFT, theme::ACCENT_DARK, theme::ACCENT),
-            Tone::Good => (theme::GOOD_BG, theme::GOOD_TEXT, theme::GOOD),
-            Tone::Warn => (theme::WARN_BG, theme::WARN_TEXT, theme::WARN),
-            Tone::Serious => (theme::SERIOUS_BG, theme::SERIOUS_TEXT, theme::SERIOUS),
-            Tone::Critical => (theme::CRITICAL_BG, theme::CRITICAL_TEXT, theme::CRITICAL),
+            Tone::Neutral => (c.neutral_bg, c.nav_text, c.neutral_dot),
+            Tone::Accent => (c.accent_soft, c.accent_text, c.accent),
+            Tone::Good => (c.good_bg, c.good_text, c.good),
+            Tone::Warn => (c.warn_bg, c.warn_text, c.warn),
+            Tone::Serious => (c.serious_bg, c.serious_text, c.serious),
+            Tone::Critical => (c.critical_bg, c.critical_text, c.critical),
+        }
+    }
+
+    /// Textfarbe für Werte in diesem Ton (neutral = leiser Text).
+    pub fn text(self) -> Color32 {
+        match self {
+            Tone::Neutral => theme::p().muted,
+            _ => self.colors().1,
         }
     }
 }
@@ -294,11 +366,12 @@ pub fn chip(ui: &mut egui::Ui, tone: Tone, text: &str) -> egui::Response {
 
 /// Hinweisleiste mit Symbol; gibt `true` zurück, wenn der Link (falls angegeben) geklickt wurde.
 pub fn alert(ui: &mut egui::Ui, tone: Tone, title: &str, text: &str, link: Option<&str>) -> bool {
+    let c = theme::p();
     let (bg, fg, line, icon, icon_color) = match tone {
-        Tone::Critical => (theme::CRITICAL_BG, Color32::from_rgb(0x7d, 0x1d, 0x1d), theme::CRITICAL_LINE, icons::Icon::AlertCircle, theme::CRITICAL),
-        Tone::Warn | Tone::Serious => (theme::WARN_BG, theme::WARN_TEXT, theme::WARN_LINE, icons::Icon::Alert, Color32::from_rgb(0xb0, 0x78, 0x00)),
-        Tone::Good => (theme::GOOD_BG, theme::GOOD_TEXT, theme::GOOD_BG, icons::Icon::Check, theme::GOOD),
-        Tone::Neutral | Tone::Accent => (Color32::from_rgb(0xee, 0xf4, 0xfc), Color32::from_rgb(0x12, 0x3f, 0x74), Color32::from_rgb(0xb7, 0xd3, 0xf6), icons::Icon::Info, theme::ACCENT),
+        Tone::Critical => (c.critical_bg, c.critical_text, c.critical_line, icons::Icon::AlertCircle, c.critical),
+        Tone::Warn | Tone::Serious => (c.warn_bg, c.warn_text, c.warn_line, icons::Icon::Alert, c.warn_text),
+        Tone::Good => (c.good_bg, c.good_text, c.good_bg, icons::Icon::Check, c.good),
+        Tone::Neutral | Tone::Accent => (c.info_bg, c.info_text, c.info_line, icons::Icon::Info, c.accent),
     };
     let mut clicked = false;
     egui::Frame::new()
@@ -319,7 +392,188 @@ pub fn alert(ui: &mut egui::Ui, tone: Tone, title: &str, text: &str, link: Optio
                 }
             });
         });
+    ui.add_space(4.0);
     clicked
+}
+
+/// Kennzahl: Titel, Wert, Zusatzzeile (deren Ton färbt sie).
+pub struct Stat {
+    pub title: String,
+    pub value: String,
+    pub sub: String,
+    pub tone: Tone,
+}
+
+impl Stat {
+    pub fn new(title: impl Into<String>, value: impl Into<String>, sub: impl Into<String>) -> Stat {
+        Stat { title: title.into(), value: value.into(), sub: sub.into(), tone: Tone::Neutral }
+    }
+
+    pub fn tone(mut self, tone: Tone) -> Stat {
+        self.tone = tone;
+        self
+    }
+}
+
+fn stat_tile(ui: &mut egui::Ui, s: &Stat) {
+    card_frame().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.add(egui::Label::new(egui::RichText::new(&s.title).color(theme::p().text_soft)).truncate());
+        ui.add(egui::Label::new(theme::strong(&s.value, 24.0)).truncate());
+        ui.add(egui::Label::new(egui::RichText::new(&s.sub).size(12.0).color(s.tone.text())).truncate());
+    });
+}
+
+/// Verteilt Kennzahl-Kacheln auf so viele Spalten, wie mit `min_width` nebeneinander passen.
+pub fn stat_rows(ui: &mut egui::Ui, stats: &[Stat], min_width: f32) {
+    let gap = ui.spacing().item_spacing.x;
+    let per_row = (((ui.available_width() + gap) / (min_width + gap)).floor() as usize).clamp(1, stats.len().max(1));
+    for row in stats.chunks(per_row) {
+        ui.columns(per_row, |cols| {
+            for (col, s) in cols.iter_mut().zip(row) {
+                stat_tile(col, s);
+            }
+        });
+    }
+    ui.add_space(4.0);
+}
+
+/// Messbalken: gefüllter Anteil `fraction` (0–1) auf einer helleren Spur, optional ein Strich bei `marker`.
+pub fn meter(ui: &mut egui::Ui, width: f32, fraction: f32, fill: Color32, track: Color32, marker: Option<f32>) -> egui::Response {
+    let height = 8.0;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height + 8.0), egui::Sense::hover());
+    let bar = egui::Rect::from_center_size(rect.center(), egui::vec2(width, height));
+    let painter = ui.painter();
+    painter.rect_filled(bar, 4.0, track);
+    let f = fraction.clamp(0.0, 1.0);
+    if f > 0.0 {
+        let filled = egui::Rect::from_min_size(bar.min, egui::vec2((bar.width() * f).max(height), height));
+        painter.rect_filled(filled, 4.0, fill);
+    }
+    if let Some(m) = marker {
+        let x = bar.left() + bar.width() * m.clamp(0.0, 1.0);
+        painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(2.0_f32, theme::p().text));
+    }
+    response
+}
+
+/// Hauptaktion (gefüllt im Akzent).
+pub fn primary_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let label = egui::RichText::new(text).family(theme::semibold()).color(Color32::WHITE);
+    ui.add(egui::Button::new(label).fill(theme::p().accent).stroke(egui::Stroke::NONE))
+}
+
+/// Weiche Aktion (hellblau), z. B. „Einplanen“.
+pub fn soft_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let c = theme::p();
+    let label = egui::RichText::new(text).family(theme::semibold()).color(c.accent_text);
+    ui.add(egui::Button::new(label).fill(c.info_bg).stroke(egui::Stroke::new(1.0_f32, c.info_line)))
+}
+
+/// Kleiner Knopf nur mit Symbol; der Tooltip sagt, was er tut.
+pub fn icon_button(ui: &mut egui::Ui, icon: icons::Icon, hint: &str, color: Option<Color32>) -> egui::Response {
+    let c = theme::p();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+    let enabled = ui.is_enabled();
+    let bg = if enabled && response.hovered() { c.control } else { c.card };
+    ui.painter().rect(rect, 8.0, bg, egui::Stroke::new(1.0_f32, c.line), egui::StrokeKind::Inside);
+    let mut ink = color.unwrap_or(c.nav_text);
+    if !enabled {
+        ink = ink.gamma_multiply(0.35);
+    }
+    icons::paint(ui.painter(), icon, egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0)), ink);
+    response.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Löschen und andere Aktionen mit Folgen: normaler Knopf mit roter Schrift.
+pub fn danger_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add(egui::Button::new(egui::RichText::new(text).color(theme::p().critical_text)))
+}
+
+/// Eintrag einer Auswahlliste (links auf Listen-/Detailseiten): Titel, rechts ein Wert, darunter Details und ein Chip.
+pub struct ListEntry<'a> {
+    pub title: &'a str,
+    pub right: &'a str,
+    pub meta: &'a str,
+    pub chip: Option<(Tone, &'a str)>,
+    /// zusätzliche Zeile in eigener Farbe (z. B. „Termin überschritten“)
+    pub note: Option<(&'a str, Color32)>,
+}
+
+impl<'a> ListEntry<'a> {
+    pub fn new(title: &'a str) -> ListEntry<'a> {
+        ListEntry { title, right: "", meta: "", chip: None, note: None }
+    }
+}
+
+/// Zeichnet einen Listeneintrag als Karte; Klick wählt ihn aus.
+pub fn list_entry(ui: &mut egui::Ui, id_salt: impl std::hash::Hash, selected: bool, e: &ListEntry<'_>) -> egui::Response {
+    let id = ui.id().with(("list_entry", id_salt));
+    let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
+    let c = theme::p();
+    let (fill, stroke) = if selected {
+        (c.accent_soft, c.accent_light)
+    } else if hovered {
+        (c.faint, c.field_line)
+    } else {
+        (c.card, c.line)
+    };
+    let inner = egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0_f32, stroke))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                if !e.right.is_empty() {
+                    // rechter Wert zuerst, damit ein langer Titel gekürzt wird und nicht den Wert verdrängt
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(e.right).family(theme::semibold()).color(c.text));
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(egui::Label::new(egui::RichText::new(e.title).family(theme::semibold()).color(c.text)).truncate());
+                        });
+                    });
+                } else {
+                    ui.add(egui::Label::new(egui::RichText::new(e.title).family(theme::semibold()).color(c.text)).truncate());
+                }
+            });
+            if !e.meta.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(e.meta).size(12.0).color(c.text_soft)).truncate());
+            }
+            if e.chip.is_some() || e.note.is_some() {
+                ui.horizontal(|ui| {
+                    if let Some((tone, text)) = e.chip {
+                        chip(ui, tone, text);
+                    }
+                    if let Some((text, color)) = e.note {
+                        ui.label(egui::RichText::new(text).size(12.0).color(color));
+                    }
+                });
+            }
+        });
+    ui.add_space(2.0);
+    ui.interact(inner.response.rect, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Linke Listenspalte einer Listen-/Detailseite: eigene Breite, scrollt für sich.
+pub fn list_panel(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let frame = egui::Frame::new().fill(theme::p().page).inner_margin(egui::Margin { left: 0, right: 14, top: 0, bottom: 0 });
+    egui::SidePanel::left(id.to_string())
+        .default_width(310.0)
+        .width_range(240.0..=460.0)
+        .frame(frame)
+        .show_inside(ui, add);
+}
+
+/// Rechter Detailbereich einer Listen-/Detailseite (scrollt).
+pub fn detail_panel(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let frame = egui::Frame::new().fill(theme::p().page).inner_margin(egui::Margin { left: 10, right: 0, top: 0, bottom: 0 });
+    egui::CentralPanel::default().frame(frame).show_inside(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, add);
+    });
 }
 
 #[cfg(test)]

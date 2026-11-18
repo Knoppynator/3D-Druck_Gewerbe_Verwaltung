@@ -162,11 +162,11 @@ impl NavBadges {
     fn badge(&self, page: Page) -> Badge {
         match page {
             Page::Overview if self.todo > 0 => Badge::Count(self.todo),
-            Page::Orders if self.open_orders > 0 => Badge::Text(self.open_orders.to_string(), theme::MUTED),
-            Page::Production if self.printing => Badge::Dot(theme::GOOD, "Druck läuft"),
-            Page::Production if self.queued > 0 => Badge::Text(self.queued.to_string(), theme::MUTED),
-            Page::Invoices if self.overdue => Badge::Text("überfällig".into(), theme::CRITICAL_TEXT),
-            Page::Stock if self.low_stock > 0 => Badge::Dot(theme::WARN, "Posten unter Mindestbestand oder knapp"),
+            Page::Orders if self.open_orders > 0 => Badge::Text(self.open_orders.to_string(), theme::p().muted),
+            Page::Production if self.printing => Badge::Dot(theme::p().good, "Druck läuft"),
+            Page::Production if self.queued > 0 => Badge::Text(self.queued.to_string(), theme::p().muted),
+            Page::Invoices if self.overdue => Badge::Text("überfällig".into(), theme::p().critical_text),
+            Page::Stock if self.low_stock > 0 => Badge::Dot(theme::p().warn, "Posten unter Mindestbestand oder knapp"),
             _ => Badge::None,
         }
     }
@@ -177,14 +177,14 @@ fn nav_item(ui: &mut egui::Ui, page: Page, selected: bool, badge: Badge) -> egui
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
     let painter = ui.painter();
     let bg = if selected {
-        theme::ACCENT_SOFT
+        theme::p().accent_soft
     } else if response.hovered() {
-        theme::LINE_SOFT
+        theme::p().line_soft
     } else {
         Color32::TRANSPARENT
     };
     painter.rect_filled(rect, 8.0, bg);
-    let fg = if selected { theme::ACCENT_DARK } else { theme::NAV_TEXT };
+    let fg = if selected { theme::p().accent_text } else { theme::p().nav_text };
     let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 19.0, rect.center().y), egui::vec2(18.0, 18.0));
     icons::paint(painter, page.icon(), icon_rect, fg);
     let font = egui::FontId::new(14.0, if selected { theme::semibold() } else { egui::FontFamily::Proportional });
@@ -198,7 +198,7 @@ fn nav_item(ui: &mut egui::Ui, page: Page, selected: bool, badge: Badge) -> egui
             let galley = painter.layout_no_wrap(n.to_string(), egui::FontId::new(11.0, theme::semibold()), Color32::WHITE);
             let w = (galley.size().x + 12.0).max(20.0);
             let pill = egui::Rect::from_min_max(egui::pos2(right.x - w, right.y - 10.0), egui::pos2(right.x, right.y + 10.0));
-            painter.rect_filled(pill, 10.0, theme::ACCENT);
+            painter.rect_filled(pill, 10.0, theme::p().accent);
             painter.galley(pill.center() - galley.size() / 2.0, galley, Color32::WHITE);
         }
         Badge::Text(text, color) => {
@@ -220,7 +220,7 @@ fn nav_group(ui: &mut egui::Ui, title: &str) {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.add_space(10.0);
-        ui.label(egui::RichText::new(title).size(11.0).family(theme::semibold()).color(theme::MUTED));
+        ui.label(egui::RichText::new(title).size(11.0).family(theme::semibold()).color(theme::p().muted));
     });
 }
 
@@ -248,11 +248,15 @@ struct Main {
     badges: NavBadges,
     /// Zeitpunkt (egui-Zeit in s) des letzten Ladens der Kennzeichen
     badges_at: f64,
+    /// gewähltes Design und ob gerade dunkel gezeichnet wird
+    theme_mode: theme::Mode,
+    dark: bool,
 }
 
 impl Main {
     fn new(dir: PathBuf) -> Result<Main, String> {
         let db = Db::open(&dir.join("druckplaner.sqlite")).map_err(|e| e.to_string())?;
+        let theme_mode = db.setting(theme::Mode::SETTING).ok().flatten().map_or(theme::Mode::Light, |k| theme::Mode::from_key(&k));
         let mut main = Main {
             db,
             page: Page::Dashboard,
@@ -276,6 +280,8 @@ impl Main {
             settings: SettingsView::new(dir),
             badges: NavBadges::default(),
             badges_at: f64::NEG_INFINITY,
+            theme_mode,
+            dark: false,
         };
         main.set_page(Page::Dashboard);
         Ok(main)
@@ -337,14 +343,14 @@ impl Main {
         // alle 30 s auch ohne Eingabe neu zeichnen, damit die Kennzeichen aktuell bleiben
         ctx.request_repaint_after(std::time::Duration::from_secs(30));
 
-        let status_frame = egui::Frame::new().fill(theme::SIDEBAR).inner_margin(egui::Margin::symmetric(14, 5));
+        let status_frame = egui::Frame::new().fill(theme::p().sidebar).inner_margin(egui::Margin::symmetric(14, 5));
         egui::TopBottomPanel::bottom("status_bar").frame(status_frame).show(ctx, |ui| {
-            let color = if self.status.starts_with("Fehler") { theme::CRITICAL_TEXT } else { theme::TEXT_SOFT };
+            let color = if self.status.starts_with("Fehler") { theme::p().critical_text } else { theme::p().text_soft };
             ui.label(egui::RichText::new(&self.status).size(12.0).color(color));
         });
 
         let mut goto = None;
-        let nav_frame = egui::Frame::new().fill(theme::SIDEBAR).inner_margin(egui::Margin { left: 10, right: 10, top: 14, bottom: 10 });
+        let nav_frame = egui::Frame::new().fill(theme::p().sidebar).inner_margin(egui::Margin { left: 10, right: 10, top: 14, bottom: 10 });
         egui::SidePanel::left("nav").exact_width(224.0).resizable(false).frame(nav_frame).show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.horizontal(|ui| {
@@ -356,7 +362,7 @@ impl Main {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.label(theme::strong("Druckplaner", 16.0));
-                    ui.label(egui::RichText::new("3D-Druck-Fertigung").size(12.0).color(theme::MUTED));
+                    ui.label(egui::RichText::new("3D-Druck-Fertigung").size(12.0).color(theme::p().muted));
                 });
             });
             ui.add_space(6.0);
@@ -380,11 +386,11 @@ impl Main {
                 }
                 ui.add_space(4.0);
                 if !self.badges.last_backup.is_empty() {
-                    egui::Frame::new().fill(theme::LINE_SOFT).corner_radius(8).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                    egui::Frame::new().fill(theme::p().line_soft).corner_radius(8).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
-                            icons::show(ui, Icon::Check, 14.0, theme::GOOD_TEXT);
-                            ui.label(egui::RichText::new(format!("Gesichert {}", self.badges.last_backup)).size(12.0).color(theme::TEXT_SOFT));
+                            icons::show(ui, Icon::Check, 14.0, theme::p().good_text);
+                            ui.label(egui::RichText::new(format!("Gesichert {}", self.badges.last_backup)).size(12.0).color(theme::p().text_soft));
                         });
                     });
                 }
@@ -395,9 +401,9 @@ impl Main {
         }
 
         let mut nav = None;
-        let page_frame = egui::Frame::new().fill(theme::PAGE).inner_margin(egui::Margin { left: 24, right: 24, top: 18, bottom: 10 });
+        let page_frame = egui::Frame::new().fill(theme::p().page).inner_margin(egui::Margin { left: 24, right: 24, top: 18, bottom: 10 });
         egui::CentralPanel::default().frame(page_frame).show(ctx, |ui| match self.page {
-            Page::Dashboard => self.dashboard.ui(ui),
+            Page::Dashboard => self.dashboard.ui(ui, &self.db, &mut self.status),
             Page::Overview => nav = self.overview.ui(ui, &self.db, &mut self.status),
             Page::Orders => self.orders.ui(ui, &self.db, &mut self.status),
             Page::Invoices => self.invoices.ui(ui, &self.db, &mut self.status),
@@ -417,6 +423,13 @@ impl Main {
         });
         if let Some(nav) = nav {
             self.go(nav);
+        }
+        if let Some(mode) = self.settings.take_theme_change() {
+            self.theme_mode = mode;
+            self.dark = theme::apply(ctx, mode);
+        } else if self.theme_mode == theme::Mode::System && theme::Mode::System.is_dark(ctx) != self.dark {
+            // Windows hat zwischen hell und dunkel gewechselt
+            self.dark = theme::apply(ctx, theme::Mode::System);
         }
     }
 }
@@ -473,9 +486,16 @@ fn main() -> eframe::Result<()> {
         "Druckplaner",
         options,
         Box::new(|cc| {
-            theme::apply(&cc.egui_ctx);
+            theme::install_fonts(&cc.egui_ctx);
             icons::init(&cc.egui_ctx);
-            Ok(Box::new(App { inner: Main::new(data_dir()) }))
+            let mut inner = Main::new(data_dir());
+            match &mut inner {
+                Ok(main) => main.dark = theme::apply(&cc.egui_ctx, main.theme_mode),
+                Err(_) => {
+                    theme::apply(&cc.egui_ctx, theme::Mode::Light);
+                }
+            }
+            Ok(Box::new(App { inner }))
         }),
     )
 }

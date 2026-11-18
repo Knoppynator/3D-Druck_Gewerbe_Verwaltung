@@ -174,7 +174,7 @@ impl Overview {
                     let col = BoardColumn::ALL[idx];
                     let cards: Vec<&OrderSummary> = board.iter().filter(|s| s.board_column() == Some(col)).collect();
                     ui.strong(format!("{} ({})", col.label(), cards.len()));
-                    let frame = egui::Frame::new().fill(theme::LINE_SOFT).corner_radius(12).inner_margin(8);
+                    let frame = egui::Frame::new().fill(theme::p().line_soft).corner_radius(12).inner_margin(8);
                     let (_, dropped) = ui.dnd_drop_zone::<i64, ()>(frame, |ui| {
                         ui.set_min_size(egui::vec2(ui.available_width(), 110.0));
                         for s in &cards {

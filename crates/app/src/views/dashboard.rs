@@ -1,14 +1,20 @@
 use druckplaner_core::{
     dashboard::{CostRates, MonthSales, ProductCost, Projection, ReachRow, Tiles},
-    date::format_de,
+    date::{format_datetime_de, format_de},
     money::format_eur,
     Db,
 };
 use eframe::egui::{self, Color32};
 
-use crate::{theme, widgets};
+use crate::{
+    theme,
+    widgets::{self, Stat, Tone},
+};
 
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
+
+/// Skala der Reichweite-Balken in Tagen (alles darüber ist „voll“).
+const REACH_SCALE_DAYS: f32 = 90.0;
 
 #[derive(Default)]
 pub struct DashboardView {
@@ -30,71 +36,150 @@ fn eur(value: f64) -> String {
     format_eur((value * 100.0).round() as i64)
 }
 
-/// Kennzahl-Kachel: Titel, Wert, Zusatzzeile.
-struct Tile {
-    title: String,
-    value: String,
-    sub: String,
-    sub_color: Color32,
+/// Ganze Euro ohne Cent für Achsen und Beschriftungen, z. B. `1.250 €`.
+fn eur_short(value: f64) -> String {
+    let s = format_eur((value.round() * 100.0) as i64);
+    s.trim_end_matches(" €").trim_end_matches(",00").to_string() + " €"
 }
 
-fn tile(ui: &mut egui::Ui, t: &Tile) {
-    widgets::card_frame().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.spacing_mut().item_spacing.y = 4.0;
-        ui.label(egui::RichText::new(&t.title).color(theme::TEXT_SOFT));
-        ui.label(theme::strong(&t.value, 22.0));
-        ui.add(egui::Label::new(egui::RichText::new(&t.sub).size(12.0).color(t.sub_color)).truncate());
-    });
+/// Runder Achsen-Höchstwert und Schrittweite für `max` (1-2-5-Reihe, 3–5 Linien).
+fn nice_axis(max: f64) -> (f64, f64) {
+    let max = max.max(1.0);
+    let raw = max / 4.0;
+    let mag = 10f64.powf(raw.log10().floor());
+    let step = [1.0, 2.0, 2.5, 5.0, 10.0].iter().map(|f| f * mag).find(|s| *s >= raw).unwrap_or(10.0 * mag);
+    ((max / step).ceil() * step, step)
 }
 
-/// Verteilt die Kacheln auf so viele Spalten, wie mit mindestens 200 px Breite nebeneinander passen.
-fn tile_rows(ui: &mut egui::Ui, tiles: &[Tile]) {
-    let per_row = (((ui.available_width() + 12.0) / 212.0).floor() as usize).clamp(1, tiles.len().max(1));
-    for row in tiles.chunks(per_row) {
-        ui.columns(per_row, |cols| {
-            for (col, t) in cols.iter_mut().zip(row) {
-                tile(col, t);
-            }
-        });
-    }
-}
-
-/// Einfaches Säulendiagramm; der letzte (laufende) Monat ist blasser, weil er noch nicht vollständig ist.
-fn bar_chart(ui: &mut egui::Ui, data: &[(String, f64)], color: Color32, format_value: &dyn Fn(f64) -> String) {
-    let height = 150.0;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height + 36.0), egui::Sense::hover());
+/// Säulendiagramm nach Dataviz-Regeln: eine Achse, feine Gitterlinien, Säulen höchstens 24 px breit und oben
+/// gerundet, Beschriftung nur am Höchstwert und am laufenden (helleren) Monat, alles andere im Tooltip.
+fn bar_chart(ui: &mut egui::Ui, data: &[(String, f64)], format_value: &dyn Fn(f64) -> String) {
+    let c = theme::p();
+    let plot_h = 170.0;
+    let axis_w = 54.0;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), plot_h + 40.0), egui::Sense::hover());
     if data.is_empty() {
         return;
     }
     let painter = ui.painter_at(rect);
-    let max = data.iter().map(|d| d.1).fold(0.0, f64::max).max(1.0);
-    let slot = rect.width() / data.len() as f32;
-    let bar_width = slot * 0.62;
-    let base = rect.top() + 18.0 + height;
-    let text_color = ui.visuals().text_color();
-    let weak = ui.visuals().weak_text_color();
+    let (top, step) = nice_axis(data.iter().map(|d| d.1).fold(0.0, f64::max));
+    let plot = egui::Rect::from_min_max(egui::pos2(rect.left() + axis_w, rect.top() + 18.0), egui::pos2(rect.right(), rect.top() + 18.0 + plot_h));
+    let y_of = |v: f64| plot.bottom() - (v / top) as f32 * plot.height();
+    let small = egui::FontId::proportional(11.0);
 
-    painter.line_segment([egui::pos2(rect.left(), base), egui::pos2(rect.right(), base)], egui::Stroke::new(1.0_f32, weak));
-    for (i, (label, value)) in data.iter().enumerate() {
-        let x = rect.left() + slot * i as f32 + (slot - bar_width) / 2.0;
-        let h = (value.max(0.0) / max) as f32 * height;
-        let fill = if i + 1 == data.len() { color.gamma_multiply(0.5) } else { color };
-        painter.rect_filled(egui::Rect::from_min_max(egui::pos2(x, base - h), egui::pos2(x + bar_width, base)), 2.0, fill);
-        if *value != 0.0 {
-            painter.text(
-                egui::pos2(x + bar_width / 2.0, base - h - 2.0),
-                egui::Align2::CENTER_BOTTOM,
-                format_value(*value),
-                egui::FontId::proportional(10.0),
-                text_color,
-            );
-        }
-        painter.text(egui::pos2(x + bar_width / 2.0, base + 4.0), egui::Align2::CENTER_TOP, label, egui::FontId::proportional(10.0), weak);
+    // Gitter und Achse
+    let mut v = 0.0;
+    while v <= top + 1e-9 {
+        let y = y_of(v);
+        let stroke = if v == 0.0 { egui::Stroke::new(1.0_f32, c.field_line) } else { egui::Stroke::new(1.0_f32, c.line_soft) };
+        painter.line_segment([egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)], stroke);
+        painter.text(egui::pos2(plot.left() - 8.0, y), egui::Align2::RIGHT_CENTER, format_value(v), small.clone(), c.muted);
+        v += step;
     }
-    if let Some(pos) = response.hover_pos() {
-        let i = (((pos.x - rect.left()) / slot) as usize).min(data.len() - 1);
-        response.on_hover_text(format!("{}: {}", data[i].0, format_value(data[i].1)));
+
+    let slot = plot.width() / data.len() as f32;
+    let bar_w = (slot * 0.6).min(24.0);
+    let max_value = data.iter().map(|d| d.1).fold(f64::MIN, f64::max);
+    let hovered = response.hover_pos().filter(|p| plot.x_range().contains(p.x)).map(|p| (((p.x - plot.left()) / slot) as usize).min(data.len() - 1));
+    for (i, (label, value)) in data.iter().enumerate() {
+        let cx = plot.left() + slot * (i as f32 + 0.5);
+        let current = i + 1 == data.len();
+        let mut fill = if current { c.accent_light } else { c.accent };
+        if hovered.is_some_and(|h| h != i) {
+            fill = fill.gamma_multiply(0.55);
+        }
+        if *value > 0.0 {
+            let bar = egui::Rect::from_min_max(egui::pos2(cx - bar_w / 2.0, y_of(*value)), egui::pos2(cx + bar_w / 2.0, plot.bottom()));
+            painter.rect_filled(bar, egui::CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, fill);
+            if *value == max_value || current {
+                let font = egui::FontId::new(11.0, theme::semibold());
+                painter.text(egui::pos2(cx, bar.top() - 3.0), egui::Align2::CENTER_BOTTOM, format_value(*value), font, c.text);
+            }
+        }
+        painter.text(egui::pos2(cx, plot.bottom() + 6.0), egui::Align2::CENTER_TOP, label, small.clone(), c.muted);
+    }
+    if let Some(i) = hovered {
+        let note = if i + 1 == data.len() { " (Monat läuft noch)" } else { "" };
+        response.on_hover_text(format!("{}: {}{note}", data[i].0, format_value(data[i].1)));
+    }
+}
+
+/// Kleine Verlaufslinie (grau, letzter Abschnitt im Akzent mit Endpunkt).
+fn sparkline(ui: &mut egui::Ui, values: &[f64]) {
+    let c = theme::p();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
+    if values.len() < 2 {
+        return;
+    }
+    let max = values.iter().copied().fold(0.0, f64::max).max(1.0);
+    let pts: Vec<egui::Pos2> = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let x = rect.left() + rect.width() * i as f32 / (values.len() - 1) as f32;
+            egui::pos2(x, rect.bottom() - 4.0 - (*v / max) as f32 * (rect.height() - 8.0))
+        })
+        .collect();
+    let painter = ui.painter();
+    painter.add(egui::Shape::line(pts[..pts.len() - 1].to_vec(), egui::Stroke::new(2.0_f32, c.field_line)));
+    painter.line_segment([pts[pts.len() - 2], pts[pts.len() - 1]], egui::Stroke::new(2.0_f32, c.accent));
+    let end = pts[pts.len() - 1];
+    painter.circle(end, 4.0, c.accent, egui::Stroke::new(2.0_f32, c.card));
+}
+
+/// Kostenbalken: ein Ganzes, in Teile geteilt (Zukauf, Filament, Druckzeit, Arbeit); Beträge stehen in den Teilen,
+/// wo sie hineinpassen.
+fn cost_bar(ui: &mut egui::Ui, parts: &[(f64, &str)]) {
+    let c = theme::p();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
+    let total: f64 = parts.iter().map(|p| p.0.max(0.0)).sum();
+    if total <= 0.0 {
+        return;
+    }
+    let painter = ui.painter();
+    let gap = 2.0;
+    let usable = rect.width() - gap * (parts.len() - 1) as f32;
+    let mut x = rect.left();
+    let font = egui::FontId::new(12.0, theme::semibold());
+    for (i, (value, _)) in parts.iter().enumerate() {
+        let w = (value.max(0.0) / total) as f32 * usable;
+        if w <= 0.0 {
+            continue;
+        }
+        let block = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w, rect.height()));
+        painter.rect_filled(block, 4.0, c.series[i]);
+        // Gelb (Slot 4) trägt dunkle Schrift, die anderen weiße
+        let ink = if i == 3 { Color32::from_rgb(0x0b, 0x0b, 0x0b) } else { Color32::WHITE };
+        let galley = painter.layout_no_wrap(eur(*value), font.clone(), ink);
+        if galley.size().x + 14.0 <= w {
+            painter.galley(egui::pos2(block.left() + 7.0, block.center().y - galley.size().y / 2.0), galley, ink);
+        }
+        x += w + gap;
+    }
+    response.on_hover_text(parts.iter().map(|(v, name)| format!("{name}: {}", eur(*v))).collect::<Vec<_>>().join("\n"));
+}
+
+fn legend(ui: &mut egui::Ui, names: &[String]) {
+    ui.horizontal_wrapped(|ui| {
+        for (i, name) in names.iter().enumerate() {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, theme::p().series[i]);
+            ui.label(egui::RichText::new(name).size(12.0).color(theme::p().text_soft));
+            ui.add_space(8.0);
+        }
+    });
+}
+
+/// Zwei Bereiche nebeneinander, wenn genug Platz ist, sonst untereinander.
+fn two_up(ui: &mut egui::Ui, left: impl FnOnce(&mut egui::Ui), right: impl FnOnce(&mut egui::Ui)) {
+    if ui.available_width() >= 900.0 {
+        ui.columns(2, |cols| {
+            left(&mut cols[0]);
+            right(&mut cols[1]);
+        });
+    } else {
+        left(ui);
+        right(ui);
     }
 }
 
@@ -120,185 +205,244 @@ impl DashboardView {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
-        let error = ui.visuals().error_fg_color;
-        let warn = ui.visuals().warn_fg_color;
+    pub fn ui(&mut self, ui: &mut egui::Ui, db: &Db, status: &mut String) {
+        let mut refresh = false;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            widgets::page_header(ui, "Dashboard", &format!("Geschäftsjahr {}", self.tiles.year), |ui| {
+                if ui.button("Aktualisieren").clicked() {
+                    refresh = true;
+                }
+            });
+            self.alerts_ui(ui);
+            two_up(ui, |ui| self.hero_ui(ui), |ui| self.stats_ui(ui));
+            two_up(ui, |ui| self.chart_ui(ui, true), |ui| self.chart_ui(ui, false));
+            if self.projection.unknown_units_invoices > 0 {
+                let text = format!(
+                    "Bei {} importierten Altrechnungen fehlt die Stückzahl (unter Rechnungen nachtragen) – bis dahin ist der Absatz zu niedrig.",
+                    self.projection.unknown_units_invoices
+                );
+                widgets::alert(ui, Tone::Warn, "", &text, None);
+            }
+            two_up(ui, |ui| self.reach_ui(ui), |ui| self.margin_ui(ui));
+        });
+        if refresh {
+            self.reload(db, status);
+            *status = "Dashboard aktualisiert".into();
+        }
+    }
+
+    fn alerts_ui(&self, ui: &mut egui::Ui) {
+        let urgent: Vec<&str> = self.reach.iter().filter(|r| r.overdue).map(|r| r.name.as_str()).collect();
+        if !urgent.is_empty() {
+            let mut names = urgent.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+            if urgent.len() > 3 {
+                names.push_str(&format!(" und {} weitere", urgent.len() - 3));
+            }
+            widgets::alert(ui, Tone::Warn, "Nachbestellen:", &format!("{names} – jetzt bestellen, sonst reicht der Bestand nicht bis zur Lieferung."), None);
+        } else if self.tiles.low_stock > 0 {
+            widgets::alert(ui, Tone::Warn, "Nachbestellen:", &format!("{} Posten unter Mindestbestand oder knapp (siehe Lager).", self.tiles.low_stock), None);
+        }
+    }
+
+    fn hero_ui(&self, ui: &mut egui::Ui) {
         let t = &self.tiles;
         let p = &self.projection;
-
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            widgets::page_header(ui, "Dashboard", &format!("Geschäftsjahr {}", t.year), |_| {});
-
-            let soft = theme::MUTED;
-            let tiles = [
-                Tile { title: format!("Umsatz {}", t.year), value: format_eur(t.revenue_cents), sub: "nach Rechnungsdatum".into(), sub_color: soft },
-                Tile {
-                    title: format!("Gewinn {} (EÜR)", t.year),
-                    value: format_eur(t.profit_cents),
-                    sub: format!("{} ein − {} aus", format_eur(t.income_cents), format_eur(t.expenses_cents)),
-                    sub_color: soft,
-                },
-                Tile {
-                    title: "Offene Forderungen".into(),
-                    value: format_eur(t.receivables_cents),
-                    sub: if t.overdue_cents > 0 { format!("{} überfällig", format_eur(t.overdue_cents)) } else { "nichts überfällig".into() },
-                    sub_color: if t.overdue_cents > 0 { error } else { soft },
-                },
-                Tile {
-                    title: "Offene Bestellungen".into(),
-                    value: format!("{} Stk.", t.open_units),
-                    sub: format!("{} Bestellung(en)", t.open_orders),
-                    sub_color: soft,
-                },
-                Tile {
-                    title: "Druck-Warteschlange".into(),
-                    value: if t.queue_ends_at.is_empty() { "leer".to_string() } else { druckplaner_core::date::format_datetime_de(&t.queue_ends_at) },
-                    sub: "voraussichtlich fertig".into(),
-                    sub_color: soft,
-                },
-                Tile {
-                    title: "Nachbestellen".into(),
-                    value: t.low_stock.to_string(),
-                    sub: if t.low_stock > 0 { "Posten unter Mindestbestand/knapp".into() } else { "alles im Soll".into() },
-                    sub_color: if t.low_stock > 0 { warn } else { soft },
-                },
-            ];
-            tile_rows(ui, &tiles);
-
-            // ---- Umsatz und Absatz
-            ui.add_space(14.0);
-            ui.strong("Umsatz und Absatz der letzten 12 Monate");
-            let revenue: Vec<(String, f64)> = self.months.iter().map(|m| (month_label(&m.month), m.revenue_cents as f64 / 100.0)).collect();
-            let units: Vec<(String, f64)> = self.months.iter().map(|m| (month_label(&m.month), m.units as f64)).collect();
-            ui.columns(2, |cols| {
-                cols[0].label("Umsatz je Monat (Rechnungsdatum, inkl. Stornos)");
-                bar_chart(&mut cols[0], &revenue, Color32::from_rgb(52, 120, 200), &|v| format!("{v:.0} €"));
-                cols[1].label("Verkaufte Sets je Monat");
-                bar_chart(&mut cols[1], &units, Color32::from_rgb(70, 160, 110), &|v| format!("{v:.0}"));
+        widgets::card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("Umsatz {}", t.year)).color(theme::p().text_soft));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| widgets::hint(ui, "nach Rechnungsdatum"));
             });
-            ui.add_space(4.0);
-            match (p.revenue_projected_cents, p.units_projected) {
-                (Some(revenue), Some(units)) => {
-                    ui.label(format!(
-                        "Hochrechnung {}: Umsatz {} und {} Sets (bisher {} und {} Sets in {} Monaten).",
-                        p.year,
-                        format_eur(revenue),
-                        units,
-                        format_eur(p.revenue_ytd_cents),
-                        p.units_ytd,
-                        widgets::dec(p.months_elapsed, 1)
-                    ));
-                }
-                _ => {
-                    ui.label(format!("Hochrechnung {}: erst nach dem ersten vollen Monat möglich.", p.year));
-                }
-            }
-            ui.label(format!("Letzte 12 Monate: Umsatz {} und {} Sets.", format_eur(p.revenue_last12_cents), p.units_last12));
-            ui.weak("Die Hochrechnung rechnet den bisherigen Jahreswert linear auf 12 Monate hoch – bei Bestellungen in größeren Posten schwankt sie stark.");
-            if p.unknown_units_invoices > 0 {
-                ui.colored_label(
-                    warn,
-                    format!(
-                        "Bei {} importierten Altrechnungen fehlt die Stückzahl (unter Rechnungen nachtragen). Bis dahin ist der Absatz zu niedrig.",
-                        p.unknown_units_invoices
-                    ),
-                );
-            }
+            ui.label(theme::strong(format_eur(t.revenue_cents), 48.0));
+            let values: Vec<f64> = self.months.iter().map(|m| m.revenue_cents as f64).collect();
+            sparkline(ui, &values);
+            egui::Grid::new("hero_facts").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                widgets::form_label(ui, "Hochrechnung aufs Jahr");
+                match (p.revenue_projected_cents, p.units_projected) {
+                    (Some(revenue), Some(units)) => ui.label(theme::strong(format!("{} · {units} Sets", format_eur(revenue)), 14.0)),
+                    _ => ui.label(egui::RichText::new("erst nach dem ersten vollen Monat").color(theme::p().muted)),
+                };
+                ui.end_row();
+                widgets::form_label(ui, "Letzte 12 Monate");
+                ui.label(theme::strong(format!("{} · {} Sets", format_eur(p.revenue_last12_cents), p.units_last12), 14.0));
+                ui.end_row();
+            });
+            widgets::hint(
+                ui,
+                &format!(
+                    "Bisher {} und {} Sets in {} Monaten, linear hochgerechnet – bei großen Bestellungen schwankt das stark.",
+                    format_eur(p.revenue_ytd_cents),
+                    p.units_ytd,
+                    widgets::dec(p.months_elapsed, 1)
+                ),
+            );
+        });
+        ui.add_space(4.0);
+    }
 
-            // ---- Reichweite
-            ui.add_space(14.0);
-            ui.strong("Materialreichweite");
-            if self.reach.is_empty() {
-                ui.weak("Noch kein Verbrauch in den letzten 90 Tagen erfasst. Verbrauch entsteht durch versendete Lieferungen (Zukaufteile, Fertigteile) und abgeschlossene Druckjobs (Filament).");
+    fn stats_ui(&self, ui: &mut egui::Ui) {
+        let t = &self.tiles;
+        let stats = [
+            Stat::new(format!("Gewinn {} (EÜR)", t.year), format_eur(t.profit_cents), format!("{} ein − {} aus", format_eur(t.income_cents), format_eur(t.expenses_cents))),
+            if t.overdue_cents > 0 {
+                Stat::new("Offene Forderungen", format_eur(t.receivables_cents), format!("{} überfällig", format_eur(t.overdue_cents))).tone(Tone::Critical)
             } else {
-                egui::Grid::new("dash_reach").striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
-                    for h in ["Posten", "Bestand", "Verbrauch (90 Tage)", "Reicht noch", "Lieferzeit", "Bestellen bis"] {
-                        ui.strong(h);
-                    }
-                    ui.end_row();
-                    for r in &self.reach {
-                        ui.label(r.name.as_str());
-                        ui.label(format!("{} {}", r.qty, r.unit));
-                        ui.label(format!("{} {}", r.consumed_90d, r.unit));
-                        ui.label(format!("{} Tage", r.days_left));
-                        ui.label(if r.lead_time_days > 0 { format!("{} Tage", r.lead_time_days) } else { "–".to_string() });
-                        if r.overdue {
-                            ui.colored_label(error, "jetzt bestellen");
-                        } else {
-                            ui.label(format_de(&r.order_by));
-                        }
-                        ui.end_row();
-                    }
-                });
-            }
+                Stat::new("Offene Forderungen", format_eur(t.receivables_cents), "nichts überfällig")
+            },
+            Stat::new("Offene Bestellungen", format!("{} Stk.", t.open_units), format!("{} Bestellung(en)", t.open_orders)),
+            if t.queue_ends_at.is_empty() {
+                Stat::new("Druck-Warteschlange", "leer", "keine Jobs geplant")
+            } else {
+                Stat::new("Druck-Warteschlange", format_datetime_de(&t.queue_ends_at), "voraussichtlich fertig")
+            },
+        ];
+        widgets::stat_rows(ui, &stats, 200.0);
+    }
 
-            // ---- Marge je Produkt
-            ui.add_space(14.0);
-            ui.strong("Marge je Produkt");
-            ui.weak(format!(
-                "Sätze: Maschine {}/h, Arbeitszeit {}/h, Filament {}/kg (Durchschnitt der hinterlegten Preise).",
-                eur(self.rates.machine_eur_per_h),
-                eur(self.rates.labor_eur_per_h),
-                eur(self.rates.filament_eur_per_g * 1000.0)
-            ));
-            if self.costs.is_empty() {
-                ui.weak("Noch keine Produkte angelegt.");
+    fn chart_ui(&self, ui: &mut egui::Ui, revenue: bool) {
+        let (title, data, fmt): (&str, Vec<(String, f64)>, &dyn Fn(f64) -> String) = if revenue {
+            ("Umsatz je Monat", self.months.iter().map(|m| (month_label(&m.month), m.revenue_cents as f64 / 100.0)).collect(), &eur_short)
+        } else {
+            ("Absatz je Monat (Sets)", self.months.iter().map(|m| (month_label(&m.month), m.units as f64)).collect(), &|v: f64| format!("{v:.0}"))
+        };
+        widgets::card(ui, title, "letzte 12 Monate · laufender Monat heller", |ui| bar_chart(ui, &data, fmt));
+    }
+
+    fn reach_ui(&self, ui: &mut egui::Ui) {
+        widgets::card(ui, "Materialreichweite", "Verbrauch der letzten 90 Tage · Strich = Lieferzeit", |ui| {
+            if self.reach.is_empty() {
+                widgets::hint(
+                    ui,
+                    "Noch kein Verbrauch in den letzten 90 Tagen. Verbrauch entsteht durch versendete Lieferungen (Zukauf- und \
+                     Fertigteile) und abgeschlossene Druckjobs (Filament).",
+                );
+                return;
             }
-            for c in &self.costs {
-                egui::CollapsingHeader::new(c.name.as_str()).id_salt(("cost", c.product_id)).default_open(true).show(ui, |ui| {
-                    egui::Grid::new(("cost_grid", c.product_id)).spacing([16.0, 3.0]).show(ui, |ui| {
-                        ui.label("Zukaufteile");
-                        ui.label(eur(c.purchase_eur));
-                        ui.end_row();
-                        ui.label(format!("Filament ({} g)", widgets::dec(c.filament_g, 0)));
-                        ui.label(eur(c.filament_eur));
-                        ui.end_row();
-                        ui.label(format!("Druckzeit ({} h)", widgets::dec(c.print_hours, 2)));
-                        ui.label(eur(c.machine_eur));
-                        ui.end_row();
-                        ui.strong("Selbstkosten ohne Arbeitszeit");
-                        ui.strong(eur(c.cost_before_labor()));
-                        ui.end_row();
-                        ui.label("Arbeitszeit");
-                        ui.label(eur(c.labor_eur));
-                        ui.end_row();
-                        ui.label("Selbstkosten mit Arbeitszeit");
-                        ui.label(eur(c.cost_total()));
-                        ui.end_row();
+            let c = theme::p();
+            let meter_w = 170.0;
+            let chip_w = 130.0;
+            let name_w = (ui.available_width() - meter_w - chip_w - 2.0 * ui.spacing().item_spacing.x).max(140.0);
+            for (i, r) in self.reach.iter().enumerate() {
+                if i > 0 {
+                    ui.add(egui::Separator::default().spacing(6.0));
+                }
+                {
+                    let until_order = r.days_left - r.lead_time_days;
+                    let (tone, label) = if r.overdue {
+                        (Tone::Critical, "jetzt bestellen".to_string())
+                    } else if until_order <= 14 {
+                        (Tone::Warn, format!("bis {}", format_de(&r.order_by)))
+                    } else {
+                        (Tone::Accent, format!("bis {}", format_de(&r.order_by)))
+                    };
+                    let (fill, track) = match tone {
+                        Tone::Critical => (c.critical, c.critical_bg),
+                        Tone::Warn => (c.warn, c.warn_bg),
+                        _ => (c.accent, c.accent_track),
+                    };
+                    ui.horizontal(|ui| {
+                        let column = || egui::Layout::top_down(egui::Align::LEFT);
+                        ui.allocate_ui_with_layout(egui::vec2(name_w, 36.0), column(), |ui| {
+                            ui.set_width(name_w);
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.add(egui::Label::new(egui::RichText::new(&r.name).family(theme::semibold()).color(c.text)).truncate());
+                            let stock = format!("{} {} im Lager · {} {} in 90 Tagen", r.qty, r.unit, r.consumed_90d, r.unit);
+                            ui.add(egui::Label::new(egui::RichText::new(stock).size(12.0).color(c.muted)).truncate());
+                        });
+                        ui.allocate_ui_with_layout(egui::vec2(meter_w, 36.0), column(), |ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            let marker = (r.lead_time_days > 0).then(|| r.lead_time_days as f32 / REACH_SCALE_DAYS);
+                            widgets::meter(ui, meter_w, r.days_left as f32 / REACH_SCALE_DAYS, fill, track, marker)
+                                .on_hover_text(format!("Skala bis {REACH_SCALE_DAYS:.0} Tage"));
+                            let lead = if r.lead_time_days > 0 { format!("{} T.", r.lead_time_days) } else { "–".into() };
+                            widgets::hint(ui, &format!("reicht {} Tage · Lieferzeit {lead}", r.days_left));
+                        });
+                        widgets::chip(ui, tone, &label);
                     });
-                    if !c.tiers.is_empty() {
-                        ui.add_space(4.0);
-                        egui::Grid::new(("tier_grid", c.product_id)).striped(true).spacing([16.0, 3.0]).show(ui, |ui| {
-                            for h in ["Staffel", "Preis", "Gewinn vor Arbeit", "Marge", "Gewinn nach Arbeit"] {
-                                ui.strong(h);
+                }
+            }
+        });
+    }
+
+    fn margin_ui(&self, ui: &mut egui::Ui) {
+        let r = &self.rates;
+        let hint = format!(
+            "Maschine {}/h · Arbeit {}/h · Filament {}/kg",
+            eur(r.machine_eur_per_h),
+            eur(r.labor_eur_per_h),
+            eur(r.filament_eur_per_g * 1000.0)
+        );
+        widgets::card(ui, "Marge je Produkt", &hint, |ui| {
+            if self.costs.is_empty() {
+                widgets::hint(ui, "Noch keine Produkte angelegt.");
+                return;
+            }
+            let c = theme::p();
+            for (n, cost) in self.costs.iter().enumerate() {
+                if n > 0 {
+                    ui.separator();
+                }
+                ui.horizontal(|ui| {
+                    ui.label(theme::strong(&cost.name, 15.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(theme::strong(eur(cost.cost_total()), 14.0));
+                        widgets::form_label(ui, "Selbstkosten je Stück");
+                    });
+                });
+                cost_bar(ui, &[(cost.purchase_eur, "Zukaufteile"), (cost.filament_eur, "Filament"), (cost.machine_eur, "Druckzeit"), (cost.labor_eur, "Arbeitszeit")]);
+                legend(
+                    ui,
+                    &[
+                        "Zukaufteile".to_string(),
+                        format!("Filament ({} g)", widgets::dec(cost.filament_g, 0)),
+                        format!("Druckzeit ({} h)", widgets::dec(cost.print_hours, 2)),
+                        "Arbeitszeit".to_string(),
+                    ],
+                );
+                if !cost.tiers.is_empty() {
+                    egui::Grid::new(("tier_grid", cost.product_id)).striped(true).spacing([18.0, 6.0]).show(ui, |ui| {
+                        widgets::table_head(ui, &["Staffel", "Preis", "Gewinn vor Arbeit", "nach Arbeit", "Marge"]);
+                        for (qty, price) in &cost.tiers {
+                            let before = cost.profit_before_labor(*price);
+                            let after = cost.profit_after_labor(*price);
+                            ui.label(format!("ab {qty} Stk."));
+                            ui.label(format_eur(*price));
+                            ui.label(egui::RichText::new(eur(before)).color(if before < 0.0 { c.critical_text } else { c.text }));
+                            ui.label(egui::RichText::new(eur(after)).color(if after < 0.0 { c.warn_text } else { c.text }));
+                            let margin = cost.margin_pct(*price).map_or("–".to_string(), |m| format!("{m:.0} %"));
+                            if after < 0.0 {
+                                widgets::chip(ui, Tone::Warn, &format!("{margin} · Arbeit nicht gedeckt"));
+                            } else {
+                                ui.label(theme::strong(margin, 14.0));
                             }
                             ui.end_row();
-                            for (qty, price) in &c.tiers {
-                                let before = c.profit_before_labor(*price);
-                                let after = c.profit_after_labor(*price);
-                                ui.label(format!("ab {qty} Stk."));
-                                ui.label(format_eur(*price));
-                                if before < 0.0 {
-                                    ui.colored_label(error, eur(before));
-                                } else {
-                                    ui.label(eur(before));
-                                }
-                                ui.label(c.margin_pct(*price).map_or("–".to_string(), |m| format!("{m:.0} %")));
-                                if after < 0.0 {
-                                    ui.colored_label(warn, eur(after));
-                                } else {
-                                    ui.label(eur(after));
-                                }
-                                ui.end_row();
-                            }
-                        });
-                    }
-                    for w in &c.warnings {
-                        ui.colored_label(warn, w.as_str());
-                    }
-                });
+                        }
+                    });
+                }
+                for w in &cost.warnings {
+                    ui.colored_label(c.warn_text, w.as_str());
+                }
             }
-            ui.weak("Druckzeit und Filament je Teil stammen aus der Plattenvorlage mit den meisten Exemplaren und werden gleichmäßig auf alle Stücke der Platte verteilt. Versandkosten sind nicht enthalten.");
+            ui.add_space(4.0);
+            widgets::hint(
+                ui,
+                "Druckzeit und Filament je Teil stammen aus der Plattenvorlage mit den meisten Exemplaren. Versandkosten sind nicht enthalten.",
+            );
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn axis_steps_are_round() {
+        assert_eq!(nice_axis(1300.0), (1500.0, 500.0));
+        assert_eq!(nice_axis(864.0), (1000.0, 250.0));
+        assert_eq!(nice_axis(45.0), (60.0, 20.0));
+        assert_eq!(nice_axis(0.0), (1.0, 0.25));
+        assert_eq!(eur_short(1250.0), "1.250 €");
+        assert_eq!(eur_short(0.0), "0 €");
     }
 }
