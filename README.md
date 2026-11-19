@@ -73,8 +73,12 @@ Mini-Kalender (📆); Dezimalzahlen werden mit Komma eingegeben.
    Slicen speichern) und ordnet Objekte anhand ihres Namens den Druckteilen zu.
 2. **Mindestbestand** fertiger Teile je Farbe: im Lager beim Fertigteil-Posten einstellen.
 3. **Produktion:** zeigt den Bedarf (offene Bestellungen + Mindestbestand − Lager − Geplantes), schlägt Platten vor,
-   führt die Warteschlange und berechnet Start/Ende je Job. Neue Drucke beginnen nur im Zeitfenster für den
-   Plattenwechsel (Einstellungen, Standard 07:00–23:00).
+   führt die Warteschlange und berechnet Start/Ende je Job. Neue Drucke beginnen nur zu deinen **Druckstart-Zeiten**
+   (Einstellungen): mehrere Zeiten mit Komma, z. B. `06:30-07:30, 18:00-22:00` für morgens und abends, pauschal oder
+   je Wochentag abweichend (`-` = an dem Tag kein Start). Standard ist 07:00–23:00. Im Zeitstrahl sind Zeiten ohne
+   Druckstart schraffiert.
+   Die Jobs sind nach **Filamentfarbe** markiert. Die Farbe kommt aus dem Farbnamen (Schwarz, Signal Yellow …) oder wird
+   unter *Stammdaten › Filament › Anzeigefarbe* gewählt.
 4. **Fertig** bucht Teile ins Lager und das Filament ab. **Fehldruck** fragt nach den brauchbaren Teilen je Druckteil
    (kommen ins Lager) und dem Verbrauch, vorbelegt mit der Standardmenge der Platte; „Zurücknehmen“ macht beides rückgängig.
 

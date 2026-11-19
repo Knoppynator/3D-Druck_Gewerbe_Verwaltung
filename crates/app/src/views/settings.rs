@@ -138,9 +138,11 @@ impl SettingsView {
                 widgets::card(ui, "Kalkulation und Produktion", "", |ui| {
                     self.fields(ui, "set_calc", &["machine_rate", "labor_rate", "default_lead_days"]);
                 });
-                widgets::card(ui, "Druckstart-Zeiten", "wann du eine Platte wechseln und den nächsten Druck starten kannst", |ui| {
+                widgets::card(ui, "Druckstart-Zeiten", "Platte wechseln, nächsten Druck starten", |ui| {
                     egui::Grid::new("set_start_times").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                        widgets::text_row(ui, "Alle Tage", &mut self.start_all);
+                        widgets::form_label(ui, "Alle Tage");
+                        ui.add(egui::TextEdit::singleline(&mut self.start_all).hint_text("z. B. 06:30-07:30, 18:00-22:00").desired_width(220.0));
+                        ui.end_row();
                         const DAYS: [&str; 7] = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
                         for (name, text) in DAYS.iter().zip(self.start_days.iter_mut()) {
                             widgets::form_label(ui, name);
