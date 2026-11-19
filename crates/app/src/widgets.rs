@@ -373,6 +373,48 @@ pub fn chip(ui: &mut egui::Ui, tone: Tone, text: &str) -> egui::Response {
     response
 }
 
+/// Anzeigefarbe eines Filaments (Farbwert oder aus dem Namen geraten), sonst neutrales Grau.
+pub fn filament_color(m: Option<&druckplaner_core::catalog::Material>) -> Color32 {
+    match m.and_then(druckplaner_core::catalog::Material::rgb) {
+        Some([r, g, b]) => Color32::from_rgb(r, g, b),
+        None => theme::p().muted,
+    }
+}
+
+/// Gut lesbare Schriftfarbe auf einer Fläche dieser Farbe.
+pub fn ink_on(fill: Color32) -> Color32 {
+    let luma = 0.299 * f32::from(fill.r()) + 0.587 * f32::from(fill.g()) + 0.114 * f32::from(fill.b());
+    if luma > 150.0 { Color32::from_rgb(0x1f, 0x1f, 0x22) } else { Color32::WHITE }
+}
+
+/// Rand um eine Filamentfarbe, damit auch Weiß bzw. Schwarz auf Karte und Seite sichtbar bleibt.
+pub fn swatch_stroke() -> egui::Stroke {
+    egui::Stroke::new(1.0_f32, theme::p().field_line)
+}
+
+/// Farbmuster (abgerundetes Quadrat) in Filamentfarbe.
+pub fn swatch(ui: &mut egui::Ui, color: Color32, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    ui.painter().rect(rect, size / 4.0, color, swatch_stroke(), egui::StrokeKind::Inside);
+    response
+}
+
+/// Farbmuster und Bezeichnung nebeneinander.
+pub fn swatch_label(ui: &mut egui::Ui, color: Color32, text: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        swatch(ui, color, 12.0);
+        ui.label(text);
+    });
+}
+
+/// Farbiger Streifen am linken Rand eines eben gezeichneten Rahmens (Markierung nach Filamentfarbe).
+pub fn color_stripe(ui: &egui::Ui, rect: egui::Rect, corner_radius: u8, color: Color32) {
+    let r = corner_radius.saturating_sub(1);
+    let stripe = egui::Rect::from_min_max(rect.left_top() + egui::vec2(1.0, 1.0), egui::pos2(rect.left() + 6.0, rect.bottom() - 1.0));
+    ui.painter().rect_filled(stripe, egui::CornerRadius { nw: r, sw: r, ne: 0, se: 0 }, color);
+}
+
 /// Hinweisleiste mit Symbol; gibt `true` zurück, wenn der Link (falls angegeben) geklickt wurde.
 pub fn alert(ui: &mut egui::Ui, tone: Tone, title: &str, text: &str, link: Option<&str>) -> bool {
     let c = theme::p();
@@ -508,11 +550,13 @@ pub struct ListEntry<'a> {
     pub chip: Option<(Tone, &'a str)>,
     /// zusätzliche Zeile in eigener Farbe (z. B. „Termin überschritten“)
     pub note: Option<(&'a str, Color32)>,
+    /// Farbmuster vor dem Titel (z. B. Filamentfarbe)
+    pub swatch: Option<Color32>,
 }
 
 impl<'a> ListEntry<'a> {
     pub fn new(title: &'a str) -> ListEntry<'a> {
-        ListEntry { title, right: "", meta: "", chip: None, note: None }
+        ListEntry { title, right: "", meta: "", chip: None, note: None, swatch: None }
     }
 }
 
@@ -537,6 +581,9 @@ pub fn list_entry(ui: &mut egui::Ui, id_salt: impl std::hash::Hash, selected: bo
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
             ui.horizontal(|ui| {
+                if let Some(color) = e.swatch {
+                    swatch(ui, color, 14.0);
+                }
                 if !e.right.is_empty() {
                     // rechter Wert zuerst, damit ein langer Titel gekürzt wird und nicht den Wert verdrängt
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -600,6 +647,20 @@ pub fn master_list(
     selected: i64,
     act: &mut Action,
 ) {
+    master_list_with_swatches(ui, (title, subtitle, new_label), id, rows, &[], selected, act);
+}
+
+/// Wie [`master_list`], mit Farbmuster je Zeile (gleiche Reihenfolge wie `rows`).
+#[allow(clippy::too_many_arguments)]
+pub fn master_list_with_swatches(
+    ui: &mut egui::Ui,
+    (title, subtitle, new_label): (&str, &str, &str),
+    id: &str,
+    rows: &[(i64, String, String)],
+    swatches: &[Color32],
+    selected: i64,
+    act: &mut Action,
+) {
     page_header(ui, title, subtitle, |ui| {
         if primary_button(ui, new_label).clicked() {
             *act = Action::New;
@@ -610,9 +671,10 @@ pub fn master_list(
             if rows.is_empty() {
                 hint(ui, "Noch keine Einträge – lege oben rechts den ersten an.");
             }
-            for (row_id, title, meta) in rows {
+            for (i, (row_id, title, meta)) in rows.iter().enumerate() {
                 let mut entry = ListEntry::new(title);
                 entry.meta = meta;
+                entry.swatch = swatches.get(i).copied();
                 if list_entry(ui, (id, *row_id), selected == *row_id, &entry).clicked() {
                     *act = Action::Select(*row_id);
                 }

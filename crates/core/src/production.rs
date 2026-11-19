@@ -177,16 +177,112 @@ pub struct Schedule {
     pub filament: Vec<FilamentNeed>,
 }
 
-/// Frühester Startzeitpunkt ab `minute`, zu dem die Platte gewechselt werden kann (Fenster `from..=to`).
-fn within_window(minute: i64, from: i64, to: i64) -> i64 {
-    let time_of_day = minute.rem_euclid(1440);
-    let day_start = minute - time_of_day;
-    if time_of_day < from {
-        day_start + from
-    } else if time_of_day > to {
-        day_start + 1440 + from
-    } else {
+/// Einstellung mit den Druckstart-Zeiten für alle Tage.
+pub const START_TIMES_KEY: &str = "start_times";
+/// Abweichende Druckstart-Zeiten je Wochentag (Mo … So); leer = wie alle Tage.
+pub const START_TIMES_DAY_KEYS: [&str; 7] =
+    ["start_times_mo", "start_times_di", "start_times_mi", "start_times_do", "start_times_fr", "start_times_sa", "start_times_so"];
+const START_TIMES_DEFAULT: &str = "07:00-23:00";
+
+/// Zeiten, zu denen du einen neuen Druck starten (die Platte wechseln) kannst – je Wochentag
+/// eine Liste von Fenstern in Minuten nach Mitternacht, 0 = Montag.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartTimes {
+    pub days: [Vec<(i64, i64)>; 7],
+}
+
+impl Default for StartTimes {
+    fn default() -> Self {
+        let all = StartTimes::parse(START_TIMES_DEFAULT).unwrap_or_default();
+        StartTimes { days: std::array::from_fn(|_| all.clone()) }
+    }
+}
+
+impl StartTimes {
+    /// `06:30-07:30, 18:00-22:00` → Fenster; eine einzelne Uhrzeit ist ein Startzeitpunkt, `-` heißt „kein Start“.
+    pub fn parse(s: &str) -> std::result::Result<Vec<(i64, i64)>, String> {
+        let s = s.trim();
+        if matches!(s, "-" | "–" | "keine" | "kein") {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for part in s.split([',', ';']).map(str::trim).filter(|p| !p.is_empty()) {
+            let (a, b) = part.split_once(['-', '–']).unwrap_or((part, part));
+            match (date::parse_hhmm(a), date::parse_hhmm(b)) {
+                (Some(from), Some(to)) if from <= to => out.push((from, to)),
+                (Some(_), Some(_)) => return Err(format!("„{part}“: Ende vor Beginn")),
+                _ => return Err(format!("„{part}“ ist keine Zeit wie 06:30-07:30")),
+            }
+        }
+        if out.is_empty() {
+            return Err("keine Zeit angegeben".into());
+        }
+        out.sort_unstable();
+        Ok(out)
+    }
+
+    /// `[(390, 450)]` → `06:30–07:30`; ohne Fenster „kein Start“.
+    pub fn describe(windows: &[(i64, i64)]) -> String {
+        if windows.is_empty() {
+            return "kein Start".into();
+        }
+        let hm = |m: i64| format!("{:02}:{:02}", m / 60, m % 60);
+        windows
+            .iter()
+            .map(|&(a, b)| if a == b { hm(a) } else { format!("{}–{}", hm(a), hm(b)) })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Wochentag (0 = Montag) eines Tages seit 1970-01-01.
+    pub fn weekday_of_day(day: i64) -> usize {
+        (day + 3).rem_euclid(7) as usize
+    }
+
+    /// Frühester Startzeitpunkt ab `minute` (Minuten seit 1970). Sind gar keine Zeiten hinterlegt, sofort.
+    pub fn next_start(&self, minute: i64) -> i64 {
+        let first_day = minute.div_euclid(1440);
+        for day in first_day..first_day + 8 {
+            for &(from, to) in &self.days[Self::weekday_of_day(day)] {
+                let start = (day * 1440 + from).max(minute);
+                if start <= day * 1440 + to {
+                    return start;
+                }
+            }
+        }
         minute
+    }
+}
+
+impl Db {
+    /// Druckstart-Zeiten aus den Einstellungen; ungültige Einträge fallen auf „alle Tage“ bzw. den Standard zurück.
+    pub fn start_times(&self) -> Result<StartTimes> {
+        let all_text = self.setting(START_TIMES_KEY)?.unwrap_or_default();
+        let all = StartTimes::parse(&all_text).or_else(|_| StartTimes::parse(START_TIMES_DEFAULT)).unwrap_or_default();
+        let mut days: [Vec<(i64, i64)>; 7] = Default::default();
+        for (i, key) in START_TIMES_DAY_KEYS.iter().enumerate() {
+            let text = self.setting(key)?.unwrap_or_default();
+            days[i] = if text.trim().is_empty() { all.clone() } else { StartTimes::parse(&text).unwrap_or_else(|_| all.clone()) };
+        }
+        Ok(StartTimes { days })
+    }
+
+    /// Speichert die Druckstart-Zeiten nach Prüfung: `all` für alle Tage, `days` (Mo … So) leer = wie alle Tage.
+    pub fn set_start_times(&self, all: &str, days: &[String; 7]) -> Result<()> {
+        const NAMES: [&str; 7] = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+        StartTimes::parse(all).map_err(|e| Error::Invalid(format!("Druckstart alle Tage: {e}")))?;
+        for (name, text) in NAMES.iter().zip(days) {
+            if !text.trim().is_empty() {
+                StartTimes::parse(text).map_err(|e| Error::Invalid(format!("Druckstart {name}: {e}")))?;
+            }
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        self.set_setting(START_TIMES_KEY, all.trim())?;
+        for (key, text) in START_TIMES_DAY_KEYS.iter().zip(days) {
+            self.set_setting(key, text.trim())?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 }
 
@@ -673,17 +769,11 @@ impl Db {
     // ---- Zeitplan
 
     /// Berechnet Start und Ende aller Jobs der Warteschlange nacheinander auf dem einen Drucker. Neue Drucke
-    /// beginnen nur innerhalb des Zeitfensters, in dem du die Platte wechseln kannst (Einstellungen).
+    /// beginnen nur zu deinen Druckstart-Zeiten (Einstellungen, pauschal oder je Wochentag).
     pub fn schedule(&self) -> Result<Schedule> {
         let now = self.now()?;
         let now_min = date::datetime_to_minutes(&now).unwrap_or(0);
-        let (from, to) = match (
-            date::parse_hhmm(&self.setting_or_default("plate_window_from")?),
-            date::parse_hhmm(&self.setting_or_default("plate_window_to")?),
-        ) {
-            (Some(f), Some(t)) if f < t => (f, t),
-            _ => (7 * 60, 23 * 60),
-        };
+        let starts = self.start_times()?;
         let templates = self.list_plate_templates()?;
         let materials = self.list_materials()?;
 
@@ -700,7 +790,7 @@ impl Db {
                     (started, end)
                 }
                 _ => {
-                    let start = within_window(available, from, to);
+                    let start = starts.next_start(available);
                     available = start + duration;
                     (start, start + duration)
                 }
@@ -969,12 +1059,59 @@ mod tests {
     }
 
     #[test]
-    fn window_logic_moves_starts_to_the_next_opening() {
+    fn default_window_moves_starts_to_the_next_opening() {
+        let t = StartTimes::default();
         let (from, to) = (7 * 60, 23 * 60);
-        assert_eq!(within_window(10 * 60, from, to), 10 * 60);
-        assert_eq!(within_window(3 * 60, from, to), 7 * 60, "zu früh → heute 07:00");
-        assert_eq!(within_window(23 * 60 + 30, from, to), 1440 + 7 * 60, "zu spät → morgen 07:00");
-        assert_eq!(within_window(1440 + 2 * 60, from, to), 1440 + 7 * 60);
-        assert_eq!(within_window(to, from, to), to);
+        assert_eq!(t.next_start(10 * 60), 10 * 60);
+        assert_eq!(t.next_start(3 * 60), 7 * 60, "zu früh → heute 07:00");
+        assert_eq!(t.next_start(23 * 60 + 30), 1440 + 7 * 60, "zu spät → morgen 07:00");
+        assert_eq!(t.next_start(1440 + 2 * 60), 1440 + from);
+        assert_eq!(t.next_start(to), to);
+    }
+
+    #[test]
+    fn start_times_per_weekday() {
+        assert_eq!(StartTimes::parse("18:00-22:00; 06:30–07:30").unwrap(), vec![(390, 450), (1080, 1320)]);
+        assert_eq!(StartTimes::parse("07:15").unwrap(), vec![(435, 435)]);
+        assert_eq!(StartTimes::parse("-").unwrap(), vec![]);
+        assert!(StartTimes::parse("22:00-18:00").is_err());
+        assert!(StartTimes::parse("abends").is_err());
+        assert!(StartTimes::parse("").is_err());
+        assert_eq!(StartTimes::describe(&[(390, 450), (1080, 1080)]), "06:30–07:30, 18:00");
+
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.start_times().unwrap(), StartTimes::default(), "ohne Einstellung 07:00–23:00");
+        let mut days: [String; 7] = Default::default();
+        days[5] = "09:00-20:00".into(); // Samstag
+        days[6] = "-".into(); // Sonntag kein Start
+        assert!(db.set_start_times("morgens", &days).is_err());
+        db.set_start_times("06:30-07:30, 18:00-22:00", &days).unwrap();
+        let t = db.start_times().unwrap();
+
+        // 2026-11-20 ist ein Freitag
+        let fri = date::datetime_to_minutes("2026-11-20 00:00").unwrap();
+        let at = |s: &str| date::datetime_to_minutes(s).unwrap();
+        assert_eq!(StartTimes::weekday_of_day(fri / 1440), 4);
+        assert_eq!(t.next_start(at("2026-11-20 05:00")), at("2026-11-20 06:30"));
+        assert_eq!(t.next_start(at("2026-11-20 07:00")), at("2026-11-20 07:00"));
+        assert_eq!(t.next_start(at("2026-11-20 08:00")), at("2026-11-20 18:00"), "tagsüber kein Start → abends");
+        assert_eq!(t.next_start(at("2026-11-20 22:30")), at("2026-11-21 09:00"), "Samstag eigene Zeiten");
+        assert_eq!(t.next_start(at("2026-11-21 20:30")), at("2026-11-23 06:30"), "Sonntag kein Start → Montag früh");
+
+        // keine Startzeit an keinem Tag: sofort statt Endlosschleife
+        let none = StartTimes { days: Default::default() };
+        assert_eq!(none.next_start(fri), fri);
+    }
+
+    #[test]
+    fn migration_takes_over_the_old_change_window() {
+        let db = Db::open_in_memory().unwrap();
+        // Die Speicher-Datenbank ist schon migriert: alten Zustand nachstellen und die Übernahme nachspielen.
+        db.set_setting("plate_window_from", "08:00").unwrap();
+        db.set_setting("plate_window_to", "20:00").unwrap();
+        let sql = include_str!("../migrations/0008_farben_startzeiten.sql");
+        db.conn.execute_batch(&sql[sql.find("INSERT OR IGNORE").unwrap()..]).unwrap();
+        assert_eq!(db.setting(START_TIMES_KEY).unwrap().as_deref(), Some("08:00-20:00"));
+        assert_eq!(db.setting("plate_window_from").unwrap(), None);
     }
 }

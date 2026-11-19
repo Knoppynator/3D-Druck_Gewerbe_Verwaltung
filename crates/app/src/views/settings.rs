@@ -4,6 +4,7 @@ use druckplaner_core::{
     backup::{restore_backup, BackupInfo},
     catalog::Customer,
     import::{read_legacy_ods, LegacyData},
+    production::{START_TIMES_DAY_KEYS, START_TIMES_KEY},
     settings::FIELDS,
     Db,
 };
@@ -30,6 +31,9 @@ pub struct SettingsView {
     theme: theme::Mode,
     /// neu gewähltes Design für die Hauptschleife
     theme_change: Option<theme::Mode>,
+    /// Druckstart-Zeiten für alle Tage und abweichend je Wochentag (Mo … So)
+    start_all: String,
+    start_days: [String; 7],
 }
 
 enum Act {
@@ -58,6 +62,14 @@ impl SettingsView {
         if let Some(values) = widgets::report(status, loaded, "") {
             self.values = values;
         }
+        if let Some(v) = widgets::report(status, db.setting(START_TIMES_KEY), "") {
+            self.start_all = v.unwrap_or_else(|| "07:00-23:00".into());
+        }
+        for (i, key) in START_TIMES_DAY_KEYS.iter().enumerate() {
+            if let Some(v) = widgets::report(status, db.setting(key), "") {
+                self.start_days[i] = v.unwrap_or_default();
+            }
+        }
         if let Some(key) = widgets::report(status, db.setting(theme::Mode::SETTING), "") {
             self.theme = theme::Mode::from_key(key.as_deref().unwrap_or(""));
         }
@@ -73,6 +85,7 @@ impl SettingsView {
     }
 
     fn save(&self, db: &Db) -> druckplaner_core::Result<()> {
+        db.set_start_times(&self.start_all, &self.start_days)?;
         for (f, v) in FIELDS.iter().zip(&self.values) {
             db.set_setting(f.key, v.trim())?;
         }
@@ -123,7 +136,24 @@ impl SettingsView {
                 }
                 let ui = &mut cols[columns - 1];
                 widgets::card(ui, "Kalkulation und Produktion", "", |ui| {
-                    self.fields(ui, "set_calc", &["machine_rate", "labor_rate", "plate_window_from", "plate_window_to", "default_lead_days"]);
+                    self.fields(ui, "set_calc", &["machine_rate", "labor_rate", "default_lead_days"]);
+                });
+                widgets::card(ui, "Druckstart-Zeiten", "wann du eine Platte wechseln und den nächsten Druck starten kannst", |ui| {
+                    egui::Grid::new("set_start_times").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                        widgets::text_row(ui, "Alle Tage", &mut self.start_all);
+                        const DAYS: [&str; 7] = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
+                        for (name, text) in DAYS.iter().zip(self.start_days.iter_mut()) {
+                            widgets::form_label(ui, name);
+                            ui.add(egui::TextEdit::singleline(text).hint_text("wie alle Tage").desired_width(220.0));
+                            ui.end_row();
+                        }
+                    });
+                    widgets::hint(
+                        ui,
+                        "Mehrere Zeiten mit Komma, z. B. „06:30-07:30, 18:00-22:00“ (nur morgens und abends). Eine einzelne \
+                         Uhrzeit ist ein fester Startzeitpunkt, „-“ heißt an diesem Tag kein Start. Die Warteschlange plant \
+                         neue Drucke nur in diese Zeiten.",
+                    );
                 });
                 widgets::card(ui, "Darstellung", "", |ui| {
                     ui.horizontal(|ui| {

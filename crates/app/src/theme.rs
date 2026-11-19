@@ -270,6 +270,8 @@ fn configure(style: &mut egui::Style, c: &Palette, dark: bool) {
     s.window_margin = egui::Margin::same(16);
     s.menu_margin = egui::Margin::same(8);
     s.combo_width = 180.0;
+    // Scrollbalken neben dem Inhalt statt darüber, mit Luft zu den Karten
+    s.scroll = egui::style::ScrollStyle { bar_inner_margin: 10.0, bar_width: 8.0, ..egui::style::ScrollStyle::solid() };
 
     style.interaction.selectable_labels = false;
 

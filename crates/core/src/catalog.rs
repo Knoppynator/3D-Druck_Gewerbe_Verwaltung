@@ -93,18 +93,67 @@ pub struct Material {
     pub price_per_kg_cents: i64,
     pub min_stock_g: i64,
     pub lead_time_days: i64,
+    /// Anzeigefarbe `#RRGGBB`; leer = aus dem Farbnamen geraten
+    pub color_hex: String,
 }
 
 impl Material {
     pub fn label(&self) -> String {
         format!("{} – {}", self.kind, self.color)
     }
+
+    /// Anzeigefarbe: eingetragener Farbwert, sonst aus dem Farbnamen geraten (z. B. „Schwarz“, „white“).
+    pub fn rgb(&self) -> Option<[u8; 3]> {
+        parse_hex_color(&self.color_hex).or_else(|| guess_color(&self.color))
+    }
+}
+
+/// `#1a2b3c` oder `1a2b3c` → RGB.
+pub fn parse_hex_color(s: &str) -> Option<[u8; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+pub fn format_hex_color([r, g, b]: [u8; 3]) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Übliche Farbnamen (deutsch/englisch) → RGB; das erste passende Wort im Namen zählt.
+pub fn guess_color(name: &str) -> Option<[u8; 3]> {
+    const NAMES: &[(&[&str], [u8; 3])] = &[
+        (&["transparent", "klar", "clear", "natur", "natural"], [0xe6, 0xe4, 0xdc]),
+        (&["schwarz", "black"], [0x1f, 0x1f, 0x22]),
+        (&["weiß", "weiss", "white"], [0xf4, 0xf4, 0xf0]),
+        (&["dunkelgrau", "anthrazit", "dark grey", "dark gray", "charcoal"], [0x4a, 0x4d, 0x52]),
+        (&["grau", "grey", "gray", "silber", "silver"], [0x9a, 0x9d, 0xa3]),
+        (&["dunkelblau", "navy"], [0x1f, 0x3a, 0x6e]),
+        (&["hellblau", "light blue", "sky"], [0x7f, 0xb8, 0xe8]),
+        (&["türkis", "tuerkis", "turquoise", "cyan", "petrol"], [0x1f, 0xa5, 0xa8]),
+        (&["blau", "blue"], [0x2a, 0x6c, 0xd6]),
+        (&["dunkelgrün", "dark green", "oliv", "olive"], [0x3d, 0x6b, 0x3a]),
+        (&["grün", "gruen", "green", "mint"], [0x3f, 0xa6, 0x4f]),
+        (&["gelb", "yellow"], [0xf2, 0xc9, 0x1d]),
+        (&["gold"], [0xc9, 0xa2, 0x27]),
+        (&["orange"], [0xf0, 0x7d, 0x1a]),
+        (&["rosa", "pink", "magenta"], [0xe8, 0x6a, 0xa8]),
+        (&["bordeaux", "weinrot", "dunkelrot", "dark red"], [0x8a, 0x1f, 0x2b]),
+        (&["rot", "red"], [0xd6, 0x33, 0x2f]),
+        (&["lila", "violett", "purple", "violet"], [0x7b, 0x4f, 0xc4]),
+        (&["braun", "brown", "holz", "wood"], [0x7a, 0x52, 0x35]),
+        (&["beige", "creme", "cream", "elfenbein", "ivory"], [0xe8, 0xdc, 0xbf]),
+    ];
+    let lower = name.to_lowercase();
+    NAMES.iter().find(|(words, _)| words.iter().any(|w| lower.contains(w))).map(|(_, rgb)| *rgb)
 }
 
 impl Db {
     pub fn list_materials(&self) -> Result<Vec<Material>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, kind, color, vendor, price_per_kg_cents, min_stock_g, lead_time_days
+            "SELECT id, kind, color, vendor, price_per_kg_cents, min_stock_g, lead_time_days, color_hex
              FROM material ORDER BY kind COLLATE NOCASE, color COLLATE NOCASE",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -116,6 +165,7 @@ impl Db {
                 price_per_kg_cents: r.get(4)?,
                 min_stock_g: r.get(5)?,
                 lead_time_days: r.get(6)?,
+                color_hex: r.get(7)?,
             })
         })?;
         collect(rows)
@@ -133,14 +183,18 @@ impl Db {
     pub fn save_material(&self, m: &mut Material) -> Result<()> {
         require(&mut m.kind, "Werkstoff")?;
         require(&mut m.color, "Farbe")?;
+        m.color_hex = match m.color_hex.trim() {
+            "" => String::new(),
+            hex => format_hex_color(parse_hex_color(hex).ok_or_else(|| Error::Invalid("Farbwert bitte als #RRGGBB angeben".into()))?),
+        };
         let dup = "Diese Kombination aus Werkstoff und Farbe existiert bereits";
         if m.id == 0 {
             self.conn
                 .execute(
                     "INSERT INTO material
-                     (kind, color, vendor, price_per_kg_cents, min_stock_g, lead_time_days)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![m.kind, m.color, m.vendor, m.price_per_kg_cents, m.min_stock_g, m.lead_time_days],
+                     (kind, color, vendor, price_per_kg_cents, min_stock_g, lead_time_days, color_hex)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![m.kind, m.color, m.vendor, m.price_per_kg_cents, m.min_stock_g, m.lead_time_days, m.color_hex],
                 )
                 .map_err(|e| map_constraint(e, dup))?;
             m.id = self.conn.last_insert_rowid();
@@ -148,10 +202,10 @@ impl Db {
             self.conn
                 .execute(
                     "UPDATE material SET kind = ?1, color = ?2, vendor = ?3, price_per_kg_cents = ?4,
-                     min_stock_g = ?5, lead_time_days = ?6 WHERE id = ?7",
+                     min_stock_g = ?5, lead_time_days = ?6, color_hex = ?8 WHERE id = ?7",
                     params![
                         m.kind, m.color, m.vendor, m.price_per_kg_cents, m.min_stock_g,
-                        m.lead_time_days, m.id
+                        m.lead_time_days, m.id, m.color_hex
                     ],
                 )
                 .map_err(|e| map_constraint(e, dup))?;
@@ -526,6 +580,22 @@ mod tests {
         db.save_material(&mut Material { kind: "PETG-CF".into(), color: "black".into(), ..Default::default() })
             .unwrap();
         assert_eq!(db.material_kinds().unwrap(), vec!["PETG", "PETG-CF"]);
+    }
+
+    #[test]
+    fn material_color_from_hex_or_name() {
+        let db = Db::open_in_memory().unwrap();
+        let mut m = Material { kind: "PETG".into(), color: "Dunkelblau matt".into(), ..Default::default() };
+        assert_eq!(m.rgb(), Some([0x1f, 0x3a, 0x6e]), "geraten aus dem Namen");
+        m.color_hex = "zzz".into();
+        assert!(matches!(db.save_material(&mut m), Err(Error::Invalid(_))));
+        m.color_hex = " 12AB3c ".into();
+        db.save_material(&mut m).unwrap();
+        let saved = &db.list_materials().unwrap()[0];
+        assert_eq!((saved.color_hex.as_str(), saved.rgb()), ("#12ab3c", Some([0x12, 0xab, 0x3c])));
+        assert_eq!(guess_color("Weiß"), Some([0xf4, 0xf4, 0xf0]));
+        assert_eq!(guess_color("Signalrot"), Some([0xd6, 0x33, 0x2f]));
+        assert_eq!(guess_color("Galaxy"), None);
     }
 
     #[test]

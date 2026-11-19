@@ -1,7 +1,7 @@
 use druckplaner_core::{
     catalog::{Material, PrintPart},
     date::{self, datetime_to_minutes, format_datetime_de, format_de, minutes_to_datetime},
-    production::{JobStatus, NeedRow, PlateTemplate, PrintJob, Schedule, ScheduledJob, Suggestions},
+    production::{JobStatus, NeedRow, PlateTemplate, PrintJob, Schedule, ScheduledJob, StartTimes, Suggestions},
     Db,
 };
 use eframe::egui;
@@ -53,8 +53,8 @@ pub struct Production {
     fail: Option<FailForm>,
     /// Zeitpunkt des Ladens (`JJJJ-MM-TT HH:MM`) für Fortschritt und „jetzt“-Linie
     now: String,
-    /// Fenster für den Plattenwechsel in Minuten nach Mitternacht
-    window: (i64, i64),
+    /// Druckstart-Zeiten je Wochentag (Einstellungen)
+    starts: StartTimes,
 }
 
 /// `JJJJ-MM-TT HH:MM` → `Mi 18:00`.
@@ -97,8 +97,20 @@ impl Production {
         if let Some(v) = widgets::report(status, db.now(), "") {
             self.now = v;
         }
-        let hhmm = |key: &str| db.setting_or_default(key).ok().and_then(|v| date::parse_hhmm(&v));
-        self.window = (hhmm("plate_window_from").unwrap_or(7 * 60), hhmm("plate_window_to").unwrap_or(23 * 60));
+        if let Some(v) = widgets::report(status, db.start_times(), "") {
+            self.starts = v;
+        }
+    }
+
+    /// Anzeigefarbe des Filaments
+    fn color_of(&self, material_id: i64) -> egui::Color32 {
+        widgets::filament_color(self.materials.iter().find(|m| m.id == material_id))
+    }
+
+    /// Druckstart-Zeiten heute, z. B. „06:30–07:30, 18:00–22:00“
+    fn starts_today(&self) -> String {
+        let day = datetime_to_minutes(&self.now).unwrap_or(0).div_euclid(1440);
+        StartTimes::describe(&self.starts.days[StartTimes::weekday_of_day(day)])
     }
 
     fn template(&self, id: i64) -> Option<&PlateTemplate> {
@@ -123,13 +135,12 @@ impl Production {
         egui::ScrollArea::vertical().show(ui, |ui| {
             let queued = self.schedule.jobs.len();
             let subtitle = if queued == 0 {
-                "Die Warteschlange ist leer".to_string()
+                format!("Die Warteschlange ist leer · Druckstart heute {}", self.starts_today())
             } else {
                 format!(
-                    "{queued} Job(s) in der Warteschlange · voraussichtlich fertig {} · Plattenwechsel {}–{}",
+                    "{queued} Job(s) in der Warteschlange · voraussichtlich fertig {} · Druckstart heute {}",
                     format_datetime_de(&self.schedule.ends_at),
-                    &minutes_to_datetime(self.window.0)[11..16],
-                    &minutes_to_datetime(self.window.1)[11..16]
+                    self.starts_today()
                 )
             };
             let suggestions = self.suggestions.items.len();
@@ -173,7 +184,8 @@ impl Production {
     fn current_ui(&self, ui: &mut egui::Ui, act: &mut Act) {
         let c = theme::p();
         let running = self.schedule.jobs.iter().find(|j| j.job.status == JobStatus::Printing);
-        widgets::card_frame().show(ui, |ui| {
+        let shown = running.or(self.schedule.jobs.first()).map(|j| self.color_of(j.job.material_id));
+        let frame = widgets::card_frame().show(ui, |ui| {
             ui.set_width(ui.available_width());
             let Some(j) = running.or(self.schedule.jobs.first()) else {
                 ui.horizontal(|ui| {
@@ -193,6 +205,7 @@ impl Production {
                 ui.label(theme::strong(&j.template_name, 16.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(&j.material_label).color(c.text_soft));
+                    widgets::swatch(ui, self.color_of(j.job.material_id), 14.0);
                 });
             });
             let (start, end, now) = (datetime_to_minutes(&j.start), datetime_to_minutes(&j.end), datetime_to_minutes(&self.now));
@@ -234,6 +247,9 @@ impl Production {
                 });
             });
         });
+        if let Some(color) = shown {
+            widgets::color_stripe(ui, frame.response.rect, 12, color);
+        }
         ui.add_space(4.0);
     }
 
@@ -290,7 +306,7 @@ impl Production {
                                 widgets::hint(ui, &format!("{} · {} g", self.parts_text(t), widgets::dec(t.filament_g, 0)));
                             }
                         });
-                        ui.label(&j.material_label);
+                        widgets::swatch_label(ui, self.color_of(j.job.material_id), &j.material_label);
                         let (s, e) = (datetime_to_minutes(&j.start), datetime_to_minutes(&j.end));
                         match (s, e) {
                             (Some(s), Some(e)) => ui.label(format!("{} → {}", short_time(s), short_time(e))),
@@ -298,7 +314,13 @@ impl Production {
                         };
                         match (j.job.status, self.waits_until(i, j)) {
                             (JobStatus::Printing, _) => widgets::chip(ui, Tone::Accent, "läuft"),
-                            (_, Some(until)) => widgets::chip(ui, Tone::Warn, &format!("wartet bis {}", &minutes_to_datetime(until)[11..16])),
+                            (_, Some(until)) => {
+                                // am selben Tag nur die Uhrzeit, sonst mit Wochentag („wartet bis Sa 09:00“)
+                                let ready = if i == 0 { datetime_to_minutes(&self.now) } else { datetime_to_minutes(&self.schedule.jobs[i - 1].end) };
+                                let same_day = ready.is_some_and(|r| r.div_euclid(1440) == until.div_euclid(1440));
+                                let when = if same_day { minutes_to_datetime(until)[11..16].to_string() } else { short_time(until) };
+                                widgets::chip(ui, Tone::Warn, &format!("wartet bis {when}"))
+                            }
                             _ => widgets::chip(ui, Tone::Neutral, "geplant"),
                         };
                         ui.horizontal(|ui| {
@@ -372,11 +394,13 @@ impl Production {
     /// Zeitstrahl der Warteschlange: Jobs als Balken, Zeiten ohne Plattenwechsel schraffiert, rote Linie = jetzt.
     fn timeline(&self, ui: &mut egui::Ui) {
         let c = theme::p();
-        let spans: Vec<(i64, i64, bool)> = self
+        let spans: Vec<(i64, i64, bool, egui::Color32)> = self
             .schedule
             .jobs
             .iter()
-            .filter_map(|j| Some((datetime_to_minutes(&j.start)?, datetime_to_minutes(&j.end)?, j.job.status == JobStatus::Printing)))
+            .filter_map(|j| {
+                Some((datetime_to_minutes(&j.start)?, datetime_to_minutes(&j.end)?, j.job.status == JobStatus::Printing, self.color_of(j.job.material_id)))
+            })
             .collect();
         let now = datetime_to_minutes(&self.now);
         let (Some(first), Some(last)) = (spans.iter().map(|s| s.0).min(), spans.iter().map(|s| s.1).max()) else { return };
@@ -388,30 +412,35 @@ impl Production {
         let painter = ui.painter_at(rect);
         painter.rect_filled(bar, 8.0, c.faint);
 
-        // Zeiten ohne Plattenwechsel (to..from am nächsten Tag) schraffieren
-        let (w_from, w_to) = self.window;
-        let mut day = from - from.rem_euclid(1440) - 1440;
-        while day < to {
-            let (off_start, off_end) = (day + w_to, day + 1440 + w_from);
-            let (a, b) = (x_of(off_start).max(bar.left()), x_of(off_end).min(bar.right()));
-            if b > a {
-                let hatch = painter.with_clip_rect(egui::Rect::from_x_y_ranges(a..=b, bar.y_range()));
-                let mut x = a - bar.height();
-                while x < b {
-                    hatch.line_segment([egui::pos2(x, bar.bottom()), egui::pos2(x + bar.height(), bar.top())], egui::Stroke::new(1.0_f32, c.line));
-                    x += 7.0;
+        // Zeiten ohne Druckstart schraffieren: je Tag die Lücken zwischen den Startfenstern
+        let mut day = from.div_euclid(1440) - 1;
+        while day * 1440 < to {
+            let mut off_from = day * 1440;
+            let windows = &self.starts.days[StartTimes::weekday_of_day(day)];
+            let gaps = windows.iter().map(|&(a, b)| (day * 1440 + a, day * 1440 + b)).chain(std::iter::once(((day + 1) * 1440, (day + 1) * 1440)));
+            for (open, close) in gaps {
+                let (a, b) = (x_of(off_from).max(bar.left()), x_of(open).min(bar.right()));
+                if b > a {
+                    let hatch = painter.with_clip_rect(egui::Rect::from_x_y_ranges(a..=b, bar.y_range()));
+                    let mut x = a - bar.height();
+                    while x < b {
+                        hatch.line_segment([egui::pos2(x, bar.bottom()), egui::pos2(x + bar.height(), bar.top())], egui::Stroke::new(1.0_f32, c.line));
+                        x += 7.0;
+                    }
                 }
+                off_from = close.max(off_from);
             }
-            day += 1440;
+            day += 1;
         }
 
         let font = egui::FontId::new(12.0, theme::semibold());
-        for (i, (s, e, running)) in spans.iter().enumerate() {
+        for (i, (s, e, running, fill)) in spans.iter().enumerate() {
             let r = egui::Rect::from_min_max(egui::pos2(x_of(*s) + 1.0, bar.top() + 8.0), egui::pos2(x_of(*e) - 1.0, bar.bottom() - 8.0));
-            let (fill, ink) = if *running { (c.accent, egui::Color32::WHITE) } else { (c.accent_light, c.text) };
-            painter.rect_filled(r, 4.0, fill);
+            // Balken in Filamentfarbe; der laufende Druck bekommt einen kräftigen Rahmen in Akzentfarbe
+            let stroke = if *running { egui::Stroke::new(2.5_f32, c.accent) } else { widgets::swatch_stroke() };
+            painter.rect(r, 4.0, *fill, stroke, egui::StrokeKind::Outside);
             if r.width() > 18.0 {
-                painter.text(egui::pos2(r.left() + 7.0, r.center().y), egui::Align2::LEFT_CENTER, (i + 1).to_string(), font.clone(), ink);
+                painter.text(egui::pos2(r.left() + 7.0, r.center().y), egui::Align2::LEFT_CENTER, (i + 1).to_string(), font.clone(), widgets::ink_on(*fill));
             }
         }
         if let Some(n) = now.filter(|n| (from..=to).contains(n)) {
@@ -439,15 +468,15 @@ impl Production {
             }
         }
         ui.horizontal(|ui| {
-            for (fill, text) in [(c.accent, "läuft"), (c.accent_light, "geplant")] {
-                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                ui.painter().rect_filled(r, 3.0, fill);
-                widgets::hint(ui, text);
-                ui.add_space(6.0);
-            }
+            widgets::hint(ui, "Balkenfarbe = Filament");
+            ui.add_space(6.0);
+            let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().rect_stroke(r, 3.0, egui::Stroke::new(2.0_f32, c.accent), egui::StrokeKind::Inside);
+            widgets::hint(ui, "läuft");
+            ui.add_space(6.0);
             let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
             ui.painter().rect_stroke(r, 3.0, egui::Stroke::new(1.0_f32, c.field_line), egui::StrokeKind::Inside);
-            widgets::hint(ui, &format!("schraffiert: kein Plattenwechsel ({}–{} Uhr)", &minutes_to_datetime(w_to)[11..16], &minutes_to_datetime(w_from)[11..16]));
+            widgets::hint(ui, "schraffiert: kein Druckstart (Einstellungen › Druckstart-Zeiten)");
             ui.add_space(6.0);
             let (r, _) = ui.allocate_exact_size(egui::vec2(2.0, 12.0), egui::Sense::hover());
             ui.painter().rect_filled(r, 0.0, c.critical);
@@ -467,7 +496,7 @@ impl Production {
                     widgets::table_head(ui, &["Teil", "Farbe", "Bestellt", "Min.", "Lager", "Geplant", "Fehlt", "Termin"]);
                     for n in &self.needs {
                         ui.label(theme::strong(&n.part_name, 14.0));
-                        ui.label(&n.material_label);
+                        widgets::swatch_label(ui, self.color_of(n.material_id), &n.material_label);
                         ui.label(n.demand.to_string());
                         ui.label(n.min_target.to_string());
                         ui.label(n.stock.to_string());
@@ -493,10 +522,10 @@ impl Production {
             }
             let c = theme::p();
             for (i, s) in self.suggestions.items.iter().enumerate() {
-                egui::Frame::new()
+                let frame = egui::Frame::new()
                     .stroke(egui::Stroke::new(1.0_f32, c.line))
                     .corner_radius(10)
-                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .inner_margin(egui::Margin { left: 18, right: 12, top: 10, bottom: 10 })
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
@@ -514,6 +543,7 @@ impl Production {
                             });
                         });
                     });
+                widgets::color_stripe(ui, frame.response.rect, 10, self.color_of(s.material_id));
                 ui.add_space(2.0);
             }
             for u in &self.suggestions.unmet {
@@ -533,7 +563,7 @@ impl Production {
                         let template = self.template(j.template_id).map_or("?", |t| t.name.as_str());
                         let material = self.materials.iter().find(|m| m.id == j.material_id).map_or(String::new(), Material::label);
                         ui.label(theme::strong(template, 14.0));
-                        ui.label(material);
+                        widgets::swatch_label(ui, self.color_of(j.material_id), &material);
                         ui.label(format_datetime_de(&j.finished_at));
                         let tone = if j.status == JobStatus::Failed { Tone::Serious } else { Tone::Good };
                         widgets::chip(ui, tone, j.status.label());

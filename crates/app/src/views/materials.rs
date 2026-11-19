@@ -1,4 +1,8 @@
-use druckplaner_core::{catalog::Material, money::format_eur, Db};
+use druckplaner_core::{
+    catalog::{format_hex_color, guess_color, Material},
+    money::format_eur,
+    Db,
+};
 use eframe::egui;
 
 use crate::widgets::{self, Action};
@@ -24,8 +28,9 @@ impl Materials {
             .iter()
             .map(|m| (m.id, m.label(), format!("{} je kg{}", format_eur(m.price_per_kg_cents), if m.vendor.is_empty() { String::new() } else { format!(" · {}", m.vendor) })))
             .collect();
+        let swatches: Vec<egui::Color32> = self.items.iter().map(|m| widgets::filament_color(Some(m))).collect();
         let subtitle = format!("{} Sorte(n) – Werkstoff und Farbe, Preis, Mindestbestand und Lieferzeit", self.items.len());
-        widgets::master_list(ui, ("Filament", &subtitle, "Neues Filament"), "materials_list", &rows, self.form.id, &mut act);
+        widgets::master_list_with_swatches(ui, ("Filament", &subtitle, "Neues Filament"), "materials_list", &rows, &swatches, self.form.id, &mut act);
 
         widgets::detail_panel(ui, |ui| {
             let title = if self.form.id == 0 { "Neues Filament" } else { "Filament bearbeiten" };
@@ -33,6 +38,24 @@ impl Materials {
                 egui::Grid::new("material_form").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
                     widgets::text_row(ui, "Werkstoff (z. B. PETG)", &mut self.form.kind);
                     widgets::text_row(ui, "Farbe", &mut self.form.color);
+                    widgets::form_label(ui, "Anzeigefarbe");
+                    ui.horizontal(|ui| {
+                        let [r, g, b] = self.form.rgb().unwrap_or([0x9a, 0x9d, 0xa3]);
+                        let mut rgb = [r, g, b];
+                        if ui.color_edit_button_srgb(&mut rgb).on_hover_text("Farbe für Produktion und Listen").changed() {
+                            self.form.color_hex = format_hex_color(rgb);
+                        }
+                        if self.form.color_hex.is_empty() {
+                            let text = if guess_color(&self.form.color).is_some() { "aus dem Namen erkannt" } else { "nicht erkannt – bitte wählen" };
+                            widgets::hint(ui, text);
+                        } else {
+                            ui.label(&self.form.color_hex);
+                            if ui.small_button("Automatisch").on_hover_text("Farbe wieder aus dem Namen ableiten").clicked() {
+                                self.form.color_hex.clear();
+                            }
+                        }
+                    });
+                    ui.end_row();
                     widgets::text_row(ui, "Hersteller", &mut self.form.vendor);
                     widgets::eur_row(ui, "Preis pro kg", &mut self.form.price_per_kg_cents);
                     widgets::int_row(ui, "Mindestbestand", &mut self.form.min_stock_g, " g");

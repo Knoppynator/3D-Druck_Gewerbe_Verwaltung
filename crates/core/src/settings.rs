@@ -44,16 +44,6 @@ pub const FIELDS: &[SettingField] = &[
         default: "65",
     },
     SettingField {
-        key: "plate_window_from",
-        label: "Plattenwechsel möglich ab (HH:MM)",
-        default: "07:00",
-    },
-    SettingField {
-        key: "plate_window_to",
-        label: "Plattenwechsel möglich bis (HH:MM)",
-        default: "23:00",
-    },
-    SettingField {
         key: "default_shipping",
         label: "Standard-Versandkosten je Lieferung (€)",
         default: "",

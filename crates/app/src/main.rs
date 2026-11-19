@@ -420,7 +420,7 @@ impl Main {
         }
 
         let mut nav = None;
-        let page_frame = egui::Frame::new().fill(theme::p().page).inner_margin(egui::Margin { left: 24, right: 24, top: 18, bottom: 10 });
+        let page_frame = egui::Frame::new().fill(theme::p().page).inner_margin(egui::Margin { left: 24, right: 16, top: 18, bottom: 10 });
         egui::CentralPanel::default().frame(page_frame).show(ctx, |ui| match self.page {
             Page::Dashboard => self.dashboard.ui(ui, &self.db, &mut self.status),
             Page::Overview => nav = self.overview.ui(ui, &self.db, &mut self.status),
